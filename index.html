@@ -1,0 +1,2634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Water Quality Analysis Dashboard</title>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src='https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.js'></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ml-knn@3.0.0/dist/ml-knn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/h3-js@3.7.2/dist/h3-js.umd.js"></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.css' rel='stylesheet'>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+
+    <style>
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .map-container {
+            height: 500px;
+            width: 100%;
+        }
+
+        .slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 10px;
+            border-radius: 5px;
+            background: #d3d3d3;
+            outline: none;
+            opacity: 0.7;
+            -webkit-transition: .2s;
+            transition: opacity .2s;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+        }
+
+        .tooltip {
+            position: absolute;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+            max-width: 280px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            font-size: 12px;
+        }
+
+        .report-item {
+            cursor: grab;
+        }
+
+        .report-item:active {
+            cursor: grabbing;
+        }
+
+        .chart-container {
+            height: 400px;
+            width: 100%;
+        }
+        
+        .hyrowah-alert {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-left: 4px solid #ef4444;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .hyrowah-report {
+            background-color: rgba(59, 130, 246, 0.1);
+            border-left: 4px solid #3b82f6;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100" x-data="waterQualityApp()">
+    <!-- Header -->
+    <header class="bg-blue-600 text-white p-4">
+        <h1 class="text-2xl font-bold">Water Quality Analysis Dashboard</h1>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto p-4">
+        <!-- Data Ingestion & Preprocessing Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Data Ingestion & Preprocessing</h2>
+            <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4">
+                <div class="flex-1">
+                    <input type="file" 
+                           accept=".csv" 
+                           @change="handleFileUpload"
+                           class="border p-2 rounded w-full">
+                    <p class="text-sm text-gray-500 mt-1">Upload CSV with water quality parameters</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button x-show="!isLoading" 
+                            @click="processData" 
+                            :disabled="!rawData.length"
+                            :class="{'bg-blue-500 hover:bg-blue-600': rawData.length, 'bg-gray-400 cursor-not-allowed': !rawData.length}"
+                            class="text-white px-4 py-2 rounded">
+                        Process Data
+                    </button>
+                    <div x-show="isLoading" class="flex items-center">
+                        <div class="loading-spinner mr-2"></div>
+                        <span>Processing...</span>
+                    </div>
+                </div>
+            </div>
+            <div x-show="processingStatus" class="mt-4">
+                <div class="flex items-center">
+                    <div class="flex-1 bg-gray-200 rounded-full h-2.5 mr-2">
+                        <div class="bg-blue-600 h-2.5 rounded-full" :style="`width: ${processingProgress}%`"></div>
+                    </div>
+                    <span class="text-sm" x-text="`${processingProgress}%`"></span>
+                </div>
+                <p class="text-sm mt-1" x-text="processingStatus"></p>
+            </div>
+        </section>
+
+        <!-- Interactive Map Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Interactive Map</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Parameter</label>
+                    <select x-model="selectedParameter" @change="updateMapVisualization" class="w-full border p-2 rounded">
+                        <template x-for="param in parameters">
+                            <option :value="param" x-text="param"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Date Filter</label>
+                    <input type="date" x-model="dateFilter" @change="updateMapVisualization" class="w-full border p-2 rounded">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Clustering</label>
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" id="enableClustering" x-model="enableClustering" @change="updateMapVisualization">
+                        <label for="enableClustering">Enable DBSCAN Clustering</label>
+                    </div>
+                </div>
+            </div>
+            <div id="map" class="map-container rounded"></div>
+            <div class="grid grid-cols-3 gap-2 mt-2">
+                <div class="flex items-center">
+                    <div class="w-4 h-4 bg-green-500 rounded-full mr-2"></div>
+                    <span class="text-sm">Normal</span>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-4 h-4 bg-yellow-500 rounded-full mr-2"></div>
+                    <span class="text-sm">Warning</span>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-4 h-4 bg-red-500 rounded-full mr-2"></div>
+                    <span class="text-sm">Critical</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Point Analysis Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Point-Based Analysis</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Point Number</label>
+                    <select x-model="selectedPoint" @change="updatePointAnalysis" class="w-full border p-2 rounded">
+                        <option value="">Select a point</option>
+                        <template x-for="point in pointNumbers">
+                            <option :value="point" x-text="`Point #${point}`"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Compare Parameter</label>
+                    <select x-model="compareParameter" @change="updateTimeSeriesChart" class="w-full border p-2 rounded">
+                        <template x-for="param in parameters">
+                            <option :value="param" x-text="param"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Time Range</label>
+                    <select x-model="timeRange" @change="updateTimeSeriesChart" class="w-full border p-2 rounded">
+                        <option value="week">Last Week</option>
+                        <option value="month">Last Month</option>
+                        <option value="quarter">Last Quarter</option>
+                        <option value="year">Last Year</option>
+                    </select>
+                </div>
+            </div>
+            <div x-show="selectedPoint" class="p-3 bg-gray-100 rounded mb-4">
+                <h3 class="font-bold" x-text="`Point #${selectedPoint} Analysis`"></h3>
+                <div x-show="pointAnomalies.length > 0">
+                    <p class="font-semibold text-sm text-red-600 mt-1">Anomalies Detected:</p>
+                    <ul class="text-sm mt-1 pl-4">
+                        <template x-for="anomaly in pointAnomalies">
+                            <li class="list-disc" x-text="anomaly"></li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div id="radarChart" class="chart-container"></div>
+                <div id="timeSeriesChart" class="chart-container"></div>
+            </div>
+            <div id="scatter3dChart" class="chart-container mt-4"></div>
+        </section>
+
+        <!-- Overall Health Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Overall Waterbody Health</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <h3 class="text-lg font-semibold mb-2">Health Score</h3>
+                    <div class="flex items-center">
+                        <div class="text-5xl font-bold" :class="{
+                            'text-red-600': healthScore < 50,
+                            'text-yellow-600': healthScore >= 50 && healthScore < 75,
+                            'text-green-600': healthScore >= 75
+                        }" x-text="healthScore + '%'"></div>
+                        <div class="ml-4">
+                            <div class="text-lg font-medium" x-text="getHealthStatus()"></div>
+                            <div class="text-sm text-gray-500" x-text="getHealthDescription()"></div>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <h4 class="font-medium mb-2">Pollution Sources</h4>
+                        <div id="sankey" class="chart-container"></div>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="text-lg font-semibold mb-2">Parameter Correlations</h3>
+                    <div id="correlationHeatmap" class="chart-container"></div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <h3 class="text-lg font-semibold mb-2">Contamination Surface Map</h3>
+                <div id="surface3dPlot" class="chart-container"></div>
+            </div>
+        </section>
+
+        <!-- Report Builder Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Report Builder</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <h3 class="font-semibold mb-2">Available Visualizations</h3>
+                    <div class="border rounded p-2 min-h-[200px] bg-gray-50">
+                        <div class="mb-2 p-2 bg-white border rounded shadow-sm report-item" draggable="true" @dragstart="dragStart($event, 'map')">
+                            <i class="bi bi-map mr-2"></i> Interactive Map
+                        </div>
+                        <div class="mb-2 p-2 bg-white border rounded shadow-sm report-item" draggable="true" @dragstart="dragStart($event, 'radar')">
+                            <i class="bi bi-graph-up mr-2"></i> Radar Chart
+                        </div>
+                        <div class="mb-2 p-2 bg-white border rounded shadow-sm report-item" draggable="true" @dragstart="dragStart($event, 'timeseries')">
+                            <i class="bi bi-graph-up-arrow mr-2"></i> Time Series
+                        </div>
+                        <div class="mb-2 p-2 bg-white border rounded shadow-sm report-item" draggable="true" @dragstart="dragStart($event, 'heatmap')">
+                            <i class="bi bi-grid-3x3 mr-2"></i> Correlation Heatmap
+                        </div>
+                        <div class="mb-2 p-2 bg-white border rounded shadow-sm report-item" draggable="true" @dragstart="dragStart($event, 'sankey')">
+                            <i class="bi bi-diagram-3 mr-2"></i> Sankey Diagram
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="font-semibold mb-2">Report Layout</h3>
+                    <div class="border rounded p-2 min-h-[200px] bg-gray-50" 
+                         id="reportDropZone" 
+                         @dragover.prevent 
+                         @drop="dropItem($event)">
+                        <template x-if="reportItems.length === 0">
+                            <div class="text-center text-gray-400 mt-8">
+                                <i class="bi bi-drag-move"></i>
+                                <p>Drag items here</p>
+                            </div>
+                        </template>
+                        <template x-for="(item, index) in reportItems" :key="index">
+                            <div class="mb-2 p-2 bg-white border rounded shadow-sm flex justify-between items-center">
+                                <div>
+                                    <i :class="`bi ${getIconForItem(item)} mr-2`"></i>
+                                    <span x-text="getNameForItem(item)"></span>
+                                </div>
+                                <button @click="removeReportItem(index)" class="text-red-500">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="font-semibold mb-2">AI Summary</h3>
+                    <div class="border rounded p-2 h-[200px] bg-gray-50 overflow-auto">
+                        <div x-html="aiReportSummary" class="text-sm"></div>
+                    </div>
+                    <div class="mt-4 flex space-x-2">
+                        <button @click="generateReport" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                            <i class="bi bi-file-earmark-text mr-1"></i> Generate Report
+                        </button>
+                        <button @click="exportReport('pdf')" :disabled="reportItems.length === 0" :class="{'bg-green-500 hover:bg-green-600': reportItems.length > 0, 'bg-gray-400 cursor-not-allowed': reportItems.length === 0}" class="text-white px-4 py-2 rounded">
+                            <i class="bi bi-file-pdf mr-1"></i> Export PDF
+                        </button>
+                        <button @click="exportReport('csv')" :disabled="!processedData.length" :class="{'bg-yellow-500 hover:bg-yellow-600': processedData.length > 0, 'bg-gray-400 cursor-not-allowed': !processedData.length}" class="text-white px-4 py-2 rounded">
+                            <i class="bi bi-file-spreadsheet mr-1"></i> Export CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- AI Chat Interface -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">AI Assistant</h2>
+            <div class="flex flex-col space-y-4">
+                <div class="h-60 overflow-y-auto border rounded p-4" id="chatHistory">
+                    <template x-if="chatMessages.length === 0">
+                        <div class="text-center text-gray-400 mt-10">
+                            <i class="bi bi-chat-dots text-2xl"></i>
+                            <p class="mt-2">Ask questions about water quality data</p>
+                            <p class="text-sm mt-1">Examples: "Why is DO low at point #3?" or "What are the main pollution sources?"</p>
+                        </div>
+                    </template>
+                    <template x-for="(message, index) in chatMessages" :key="index">
+                        <div :class="message.type === 'user' ? 'text-right' : 'text-left'" class="mb-2">
+                            <div :class="message.type === 'user' ? 'bg-blue-100 ml-auto' : message.isAlert ? 'hyrowah-alert' : 'hyrowah-report'" class="inline-block rounded px-4 py-2 max-w-[80%]">
+                                <div x-show="message.type === 'ai' && message.loading" class="flex items-center">
+                                    <div class="loading-spinner mr-2 w-4 h-4"></div>
+                                    <span>Analyzing...</span>
+                                </div>
+                                <div x-show="!message.loading" class="whitespace-pre-wrap" x-html="message.text"></div>
+                                <div x-show="message.type === 'ai' && message.explanation" class="mt-2 text-xs text-gray-500 border-t pt-1" x-html="message.explanation"></div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                <div class="flex space-x-2">
+                    <input type="text" 
+                           x-model="userMessage" 
+                           @keyup.enter="sendMessage"
+                           class="flex-1 border p-2 rounded"
+                           placeholder="Ask about water quality...">
+                    <button @click="sendMessage" 
+                            class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                        <i class="bi bi-send"></i>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Model Integration Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Model Integration</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div class="border rounded p-3">
+                    <h3 class="font-semibold mb-2"><i class="bi bi-search mr-1"></i> Anomaly Detection</h3>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Detection Model</label>
+                        <select x-model="anomalyModel" @change="runAnomalyModel" class="w-full border p-2 rounded mb-2">
+                            <option value="isolation">Isolation Forest</option>
+                            <option value="lstm">LSTM Autoencoder</option>
+                        </select>
+                        <button @click="runAnomalyModel" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">
+                            Run Model
+                        </button>
+                        <div x-show="modelStatus.anomaly" class="mt-2 text-sm">
+                            <div :class="{'text-green-600': !modelStatus.anomaly.includes('error'), 'text-red-600': modelStatus.anomaly.includes('error')}" x-text="modelStatus.anomaly"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="border rounded p-3">
+                    <h3 class="font-semibold mb-2"><i class="bi bi-card-list mr-1"></i> Problem Classification</h3>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Classification Method</label>
+                        <select x-model="classificationModel" @change="runClassificationModel" class="w-full border p-2 rounded mb-2">
+                            <option value="rule">Rule-based Engine</option>
+                            <option value="llm">LLM Classification</option>
+                        </select>
+                        <button @click="runClassificationModel" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">
+                            Run Model
+                        </button>
+                        <div x-show="modelStatus.classification" class="mt-2 text-sm">
+                            <div :class="{'text-green-600': !modelStatus.classification.includes('error'), 'text-red-600': modelStatus.classification.includes('error')}" x-text="modelStatus.classification"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="border rounded p-3">
+                    <h3 class="font-semibold mb-2"><i class="bi bi-graph-up-arrow mr-1"></i> Forecasting</h3>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Forecast Parameter</label>
+                        <select x-model="forecastParameter" class="w-full border p-2 rounded mb-2">
+                            <template x-for="param in parameters">
+                                <option :value="param" x-text="param"></option>
+                            </template>
+                        </select>
+                        <button @click="runForecastModel" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">
+                            Forecast
+                        </button>
+                        <div x-show="modelStatus.forecast" class="mt-2 text-sm">
+                            <div :class="{'text-green-600': !modelStatus.forecast.includes('error'), 'text-red-600': modelStatus.forecast.includes('error')}" x-text="modelStatus.forecast"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <h3 class="text-lg font-semibold mb-2">Model Explainability</h3>
+                <div id="shapPlot" class="chart-container"></div>
+            </div>
+        </section>
+
+        <!-- Thresholds & Standards Section -->
+        <section class="mb-8 bg-white rounded-lg p-4 shadow">
+            <h2 class="text-xl font-bold mb-4">Thresholds & Standards</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">pH Range (Acidic to Alkaline)</label>
+                            <span x-text="`${thresholds.pH.min} - ${thresholds.pH.max}`"></span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <input type="range" min="0" max="6" step="0.1" x-model.number="thresholds.pH.min" @input="updateThresholds" class="slider flex-1">
+                            <input type="range" min="7" max="14" step="0.1" x-model.number="thresholds.pH.max" @input="updateThresholds" class="slider flex-1">
+                        </div>
+                        <div class="flex justify-between text-xs mt-1">
+                            <span>Acidic</span>
+                            <span>Neutral</span>
+                            <span>Alkaline</span>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">DO Threshold (mg/L)</label>
+                            <span x-text="thresholds.DO.min"></span>
+                        </div>
+                        <input type="range" min="0" max="15" step="0.1" x-model.number="thresholds.DO.min" @input="updateThresholds" class="slider w-full">
+                    </div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">Turbidity Threshold (NTU)</label>
+                            <span x-text="thresholds.Turbidity.max"></span>
+                        </div>
+                        <input type="range" min="0" max="100" step="1" x-model.number="thresholds.Turbidity.max" @input="updateThresholds" class="slider w-full">
+                    </div>
+                </div>
+                <div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">Conductivity Threshold (μS/cm)</label>
+                            <span x-text="thresholds.Conductivity.max"></span>
+                        </div>
+                        <input type="range" min="0" max="2000" step="10" x-model.number="thresholds.Conductivity.max" @input="updateThresholds" class="slider w-full">
+                    </div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">TDS Threshold (mg/L)</label>
+                            <span x-text="thresholds.TDS.max"></span>
+                        </div>
+                        <input type="range" min="0" max="1000" step="10" x-model.number="thresholds.TDS.max" @input="updateThresholds" class="slider w-full">
+                    </div>
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center">
+                            <label class="block font-medium text-gray-700">Lead Threshold (mg/L)</label>
+                            <span x-text="thresholds.Lead.max.toFixed(3)"></span>
+                        </div>
+                        <input type="range" min="0" max="0.1" step="0.001" x-model.number="thresholds.Lead.max" @input="updateThresholds" class="slider w-full">
+                    </div>
+                    <button @click="resetThresholds" class="mt-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300">
+                        Reset to WHO/EPA Standards
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function waterQualityApp() {
+            return {
+                // Data variables
+                rawData: [],
+                processedData: [],
+                pointNumbers: [],
+                datasetName: "Karapakkam",
+                
+                // UI state variables
+                isLoading: false,
+                processingProgress: 0,
+                processingStatus: '',
+                selectedParameter: 'pH',
+                compareParameter: 'pH',
+                dateFilter: new Date().toISOString().split('T')[0],
+                selectedPoint: '',
+                timeRange: 'month',
+                enableClustering: false,
+                healthScore: 75,
+                parameters: ['pH', 'Temperature', 'Turbidity', 'DO', 'Conductivity', 'TDS', 'Lead', 'Nitrates', 'BOD'],
+                chatMessages: [],
+                userMessage: '',
+                map: null,
+                pointAnomalies: [],
+                
+                // Report builder
+                reportItems: [],
+                aiReportSummary: 'AI summary will appear here after generating a report.',
+                
+                // Model variables
+                anomalyModel: 'isolation',
+                classificationModel: 'rule',
+                forecastParameter: 'pH',
+                modelStatus: {
+                    anomaly: '',
+                    classification: '',
+                    forecast: ''
+                },
+                
+                // API configuration
+                apiConfig: {
+                    deepseekApiKey: "sk-d9a48b6071054af99cdb0685e6dae7e5",
+                    apiUrl: "https://api.deepseek.com/v1/chat/completions"
+                },
+                
+                // Thresholds
+                thresholds: {
+                    pH: { min: 6.5, max: 8.5 },
+                    DO: { min: 5.0 },
+                    Turbidity: { max: 5.0 },
+                    Conductivity: { max: 1500 },
+                    TDS: { max: 500 },
+                    Lead: { max: 0.015 }
+                },
+                
+                // Initialize
+                init() {
+                    this.initializeMap();
+                    this.generateSampleData();
+                },
+                
+                // Map initialization
+                initializeMap() {
+                    mapboxgl.accessToken = 'pk.eyJ1Ijoicm9zaGFuMjEyMDA1IiwiYSI6ImNtOGFlbnUzZzFhZ24yanNmamZjcHR1b2YifQ.xCsLXXiaiHrpfNb7K6Cqsw';
+                    this.map = new mapboxgl.Map({
+                        container: 'map',
+                        style: 'mapbox://styles/mapbox/streets-v11',
+                        center: [80.2707, 13.0827], // Chennai coordinates
+                        zoom: 10
+                    });
+                    
+                    // Add navigation controls
+                    this.map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+                },
+                
+                // Sample data generation for demonstration
+                generateSampleData() {
+                    const sampleData = [];
+                    const centerLat = 13.0827;
+                    const centerLng = 80.2707;
+                    const parameterRanges = {
+                        pH: { min: 4.5, max: 9.5 },
+                        Temperature: { min: 20, max: 32 },
+                        Turbidity: { min: 1, max: 30 },
+                        DO: { min: 2, max: 8 },
+                        Conductivity: { min: 200, max: 2000 },
+                        TDS: { min: 100, max: 800 },
+                        Lead: { min: 0, max: 0.05 },
+                        Nitrates: { min: 0, max: 10 },
+                        BOD: { min: 1, max: 30 }
+                    };
+                    
+                    // Generate 20 sample points
+                    for (let i = 1; i <= 20; i++) {
+                        // Create coordinates around Chennai with some randomness
+                        const latOffset = (Math.random() - 0.5) * 0.2;
+                        const lngOffset = (Math.random() - 0.5) * 0.2;
+                        
+                        const point = {
+                            pointNumber: i,
+                            latitude: centerLat + latOffset,
+                            longitude: centerLng + lngOffset,
+                            date: new Date().toISOString().split('T')[0]
+                        };
+                        
+                        // Generate random values for each parameter
+                        for (const param in parameterRanges) {
+                            const range = parameterRanges[param];
+                            let value = range.min + Math.random() * (range.max - range.min);
+                            
+                            // Round to appropriate precision
+                            if (param === 'Lead') {
+                                value = parseFloat(value.toFixed(4));
+                            } else {
+                                value = parseFloat(value.toFixed(2));
+                            }
+                            
+                            point[param] = value;
+                        }
+                        
+                        // Add some data points with anomalies
+                        if (i === 5) {
+                            point.pH = 4.2; // Very acidic
+                            point.Lead = 0.045; // High lead
+                        } else if (i === 10) {
+                            point.Turbidity = 28.5; // High turbidity
+                            point.DO = 1.8; // Low dissolved oxygen
+                        } else if (i === 15) {
+                            point.TDS = 780; // High TDS
+                            point.Conductivity = 1950; // High conductivity
+                        }
+                        
+                        sampleData.push(point);
+                    }
+                    
+                    this.rawData = sampleData;
+                    this.processData(); // Process this sample data
+                },
+                
+                // File upload handler
+                handleFileUpload(event) {
+                    const file = event.target.files[0];
+                    if (file) {
+                        // Extract dataset name from file name
+                        const fileName = file.name;
+                        const fileNameWithoutExt = fileName.split('.')[0];
+                        this.datasetName = fileNameWithoutExt || "Uploaded Dataset";
+                        
+                        this.isLoading = true;
+                        this.processingProgress = 10;
+                        this.processingStatus = `Reading ${this.datasetName}.csv file...`;
+                        
+                        Papa.parse(file, {
+                            header: true,
+                            dynamicTyping: true,
+                            complete: (results) => {
+                                this.rawData = results.data;
+                                this.processingStatus = `${this.datasetName}.csv file loaded successfully.`;
+                                this.processingProgress = 50;
+                                setTimeout(() => {
+                                    this.processData();
+                                }, 500);
+                            },
+                            error: (error) => {
+                                console.error('Error parsing CSV:', error);
+                                this.processingStatus = `Error: Could not parse ${this.datasetName}.csv file.`;
+                                this.isLoading = false;
+                            }
+                        });
+                    }
+                },
+                
+                // Data processing
+                processData() {
+                    if (!this.rawData.length) {
+                        return;
+                    }
+                    
+                    this.isLoading = true;
+                    this.processingStatus = 'Removing outliers...';
+                    this.processingProgress = 60;
+                    
+                    setTimeout(() => {
+                        try {
+                            // Process the data
+                            this.processedData = this.rawData.map(row => {
+                                const processedRow = { ...row };
+                                
+                                // Z-score outlier detection for each parameter
+                                for (const param of this.parameters) {
+                                    if (processedRow[param] !== null && processedRow[param] !== undefined) {
+                                        const zScore = this.calculateZScore(processedRow[param], param);
+                                        if (Math.abs(zScore) > 3) {
+                                            // Mark as outlier but keep original value for reference
+                                            processedRow[`${param}_outlier`] = true;
+                                        }
+                                    }
+                                }
+                                
+                                // Add H3 hexagon for spatial clustering
+                                if (processedRow.latitude && processedRow.longitude) {
+                                    try {
+                                        processedRow.h3Index = h3.latLngToCell(
+                                            parseFloat(processedRow.latitude),
+                                            parseFloat(processedRow.longitude),
+                                            9 // Resolution
+                                        );
+                                    } catch (e) {
+                                        console.error('H3 error:', e);
+                                    }
+                                }
+                                
+                                return processedRow;
+                            });
+                            
+                            // Extract point numbers for selection
+                            this.pointNumbers = [...new Set(this.processedData.map(item => item.pointNumber))];
+                            
+                            this.processingStatus = 'Calculating health score...';
+                            this.processingProgress = 80;
+                            
+                            // Calculate overall health score
+                            this.calculateHealthScore();
+                            
+                            this.processingStatus = 'Processing complete.';
+                            this.processingProgress = 100;
+                            
+                            // Update map and visualizations
+                            this.updateMapVisualization();
+                            this.updateCorrelationHeatmap();
+                            this.updateSankeyDiagram();
+                            this.updateSurface3DPlot();
+                            
+                            setTimeout(() => {
+                                this.isLoading = false;
+                                this.processingStatus = '';
+                                
+                                // Add system message to chat with Hyrowah branding
+                                this.chatMessages.push({
+                                    type: 'ai',
+                                    text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                          I've analyzed the ${this.datasetName} dataset. The overall health score is 
+                                          ${this.healthScore}%, which is classified as ${this.getHealthStatus()}.<br><br>
+                                          ${this.getHealthDescription()}<br><br>
+                                          <strong>Key findings:</strong><br>
+                                          - ${this.getCriticalPointsCount()} points with critical parameters<br>
+                                          - ${this.getAcidicPointsCount()} points with acidic conditions (pH < 6.0)<br>
+                                          - ${this.getLowDOPointsCount()} points with low dissolved oxygen (<4 mg/L)<br><br>
+                                          Ask me any questions about the water quality data.`,
+                                    loading: false,
+                                    isAlert: false
+                                });
+                            }, 500);
+                        } catch (error) {
+                            console.error('Processing error:', error);
+                            this.processingStatus = 'Error: Could not process data.';
+                            this.isLoading = false;
+                        }
+                    }, 800);
+                },
+                
+                // Helper functions for Hyrowah AI response
+                getCriticalPointsCount() {
+                    return this.processedData.filter(point => 
+                        this.isParameterCritical(point, 'pH') || 
+                        this.isParameterCritical(point, 'Lead') || 
+                        this.isParameterCritical(point, 'DO')
+                    ).length;
+                },
+                
+                getAcidicPointsCount() {
+                    return this.processedData.filter(point => point.pH < 6.0).length;
+                },
+                
+                getLowDOPointsCount() {
+                    return this.processedData.filter(point => point.DO < 4).length;
+                },
+                
+                // Calculate Z-score for outlier detection
+                calculateZScore(value, parameter) {
+                    // Get mean and standard deviation for each parameter
+                    const values = this.rawData
+                        .map(row => parseFloat(row[parameter]))
+                        .filter(val => !isNaN(val));
+                    
+                    if (values.length === 0) return 0;
+                    
+                    const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+                    const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+                    const stdDev = Math.sqrt(variance);
+                    
+                    if (stdDev === 0) return 0;
+                    return (value - mean) / stdDev;
+                },
+                
+                // Update map visualization
+                updateMapVisualization() {
+                    if (!this.map || !this.processedData.length) return;
+                    
+                    // Clear existing markers
+                    const markers = document.querySelectorAll('.mapboxgl-marker');
+                    markers.forEach(marker => marker.remove());
+                    
+                    // Filter data by date if needed
+                    const filteredData = this.processedData.filter(point => {
+                        if (!this.dateFilter || !point.date) return true;
+                        return new Date(point.date) <= new Date(this.dateFilter);
+                    });
+                    
+                    // If clustering is enabled
+                    if (this.enableClustering) {
+                        // Group points by H3 hexagon
+                        const clusters = {};
+                        
+                        filteredData.forEach(point => {
+                            if (point.h3Index) {
+                                if (!clusters[point.h3Index]) {
+                                    clusters[point.h3Index] = [];
+                                }
+                                clusters[point.h3Index].push(point);
+                            }
+                        });
+                        
+                        // Add cluster markers
+                        for (const hexId in clusters) {
+                            const points = clusters[hexId];
+                            if (points.length < 2) continue; // Skip single points
+                            
+                            // Calculate cluster center
+                            const center = points.reduce(
+                                (acc, pt) => {
+                                    acc.lat += parseFloat(pt.latitude) / points.length;
+                                    acc.lng += parseFloat(pt.longitude) / points.length;
+                                    return acc;
+                                }, 
+                                { lat: 0, lng: 0 }
+                            );
+                            
+                            // Calculate average value for the selected parameter
+                            const paramValues = points.map(pt => parseFloat(pt[this.selectedParameter])).filter(v => !isNaN(v));
+                            const avgValue = paramValues.reduce((sum, v) => sum + v, 0) / paramValues.length;
+                            
+                            // Count critical points
+                            const criticalCount = points.filter(pt => this.isParameterCritical(pt, this.selectedParameter)).length;
+                            
+                            // Create cluster marker
+                            const el = document.createElement('div');
+                            el.className = 'flex items-center justify-center rounded-full border-2 border-white text-white font-bold text-xs';
+                            el.style.width = '40px';
+                            el.style.height = '40px';
+                            el.style.backgroundColor = criticalCount > points.length / 2 ? '#ef4444' : '#eab308';
+                            el.innerText = points.length;
+                            
+                            new mapboxgl.Marker(el)
+                                .setLngLat([center.lng, center.lat])
+                                .setPopup(new mapboxgl.Popup().setHTML(
+                                    `<div class="p-2">
+                                        <h3 class="font-bold">Cluster of ${points.length} points</h3>
+                                        <p>Avg ${this.selectedParameter}: ${avgValue.toFixed(2)}</p>
+                                        <p>Critical points: ${criticalCount}</p>
+                                        <p class="text-xs text-blue-600 cursor-pointer" onclick="document.getElementById('enableClustering').click()">Click to ungroup</p>
+                                    </div>`
+                                ))
+                                .addTo(this.map);
+                        }
+                        
+                        // Add individual markers for points not in clusters
+                        filteredData.forEach(point => {
+                            if (!point.h3Index || (clusters[point.h3Index] && clusters[point.h3Index].length < 2)) {
+                                this.addPointMarker(point);
+                            }
+                        });
+                    } else {
+                        // Add individual markers for all points
+                        filteredData.forEach(point => {
+                            this.addPointMarker(point);
+                        });
+                    }
+                    
+                    // Fit map bounds if needed
+                    if (filteredData.length > 0) {
+                        const bounds = new mapboxgl.LngLatBounds();
+                        filteredData.forEach(point => {
+                            if (point.longitude && point.latitude) {
+                                bounds.extend([parseFloat(point.longitude), parseFloat(point.latitude)]);
+                            }
+                        });
+                        
+                        if (!bounds.isEmpty()) {
+                            this.map.fitBounds(bounds, {
+                                padding: 50,
+                                duration: 500
+                            });
+                        }
+                    }
+                },
+                
+                // Add a single point marker to the map
+                addPointMarker(point) {
+                    if (!point.latitude || !point.longitude) return;
+                    
+                    const lat = parseFloat(point.latitude);
+                    const lng = parseFloat(point.longitude);
+                    
+                    if (isNaN(lat) || isNaN(lng)) return;
+                    
+                    // Determine marker color based on parameter value
+                    const color = this.getMarkerColor(point, this.selectedParameter);
+                    
+                    // Create popup content
+                    let popupContent = `
+                        <div class="p-2">
+                            <h3 class="font-bold">Point #${point.pointNumber}</h3>
+                            <p class="text-sm mb-2">Location: ${lat.toFixed(4)}, ${lng.toFixed(4)}</p>
+                    `;
+                    
+                    // Add parameters to popup
+                    for (const param of this.parameters) {
+                        if (point[param] !== undefined) {
+                            const isAbnormal = this.isParameterCritical(point, param);
+                            popupContent += `
+                                <div class="flex justify-between text-sm ${isAbnormal ? 'text-red-600 font-semibold' : ''}">
+                                    <span>${param}:</span>
+                                    <span>${point[param]}</span>
+                                </div>
+                            `;
+                        }
+                    }
+                    
+                    // Add analyze button
+                    popupContent += `
+                        <button onclick="document.querySelector('[x-model=\\'selectedPoint\\']').value='${point.pointNumber}';
+                                 Alpine.evaluate(document.querySelector('[x-model=\\'selectedPoint\\']'), 'updatePointAnalysis()')"
+                                class="w-full mt-2 bg-blue-500 text-white px-2 py-1 rounded text-sm hover:bg-blue-600">
+                            Analyze Point
+                        </button>
+                    </div>`;
+                    
+                    // Create and add marker
+                    const marker = new mapboxgl.Marker({
+                        color: color
+                    })
+                    .setLngLat([lng, lat])
+                    .setPopup(new mapboxgl.Popup().setHTML(popupContent))
+                    .addTo(this.map);
+                    
+                    // Add click event to marker for Hyrowah AI integration
+                    marker.getElement().addEventListener('click', () => {
+                        if (this.isParameterCritical(point, this.selectedParameter)) {
+                            // Add AI response for critical point with Hyrowah branding
+                            this.generateHyrowahResponse('marker', point);
+                        }
+                    });
+                },
+                
+                // Handle marker click with DeepSeek API integration for Hyrowah
+                generateHyrowahResponse(context, point = null) {
+                    let prompt = '';
+                    let isAlert = false;
+                    
+                    if (context === 'marker' && point) {
+                        // Check if point has critical parameters
+                        const hasCriticalPH = point.pH < 6.0;
+                        const hasCriticalLead = point.Lead > 0.05;
+                        const hasCriticalDO = point.DO < 4;
+                        
+                        if (hasCriticalPH || hasCriticalLead || hasCriticalDO) {
+                            isAlert = true;
+                            prompt = `Hyrowah Alert:
+                                      Location: Point ${point.pointNumber} (Lat: ${point.latitude}, Long: ${point.longitude}).
+                                      Parameters: pH=${point.pH}, Turbidity=${point.Turbidity} NTU, Lead=${point.Lead} mg/L, DO=${point.DO} mg/L.
+                                      Compare to WHO standards and suggest causes/mitigation.`;
+                        } else {
+                            prompt = `Hyrowah Analysis Report:
+                                      Location: Point ${point.pointNumber} (Lat: ${point.latitude}, Long: ${point.longitude}).
+                                      Parameters: pH=${point.pH}, Turbidity=${point.Turbidity} NTU, Lead=${point.Lead} mg/L, DO=${point.DO} mg/L.
+                                      Compare to WHO standards and suggest causes/mitigation.`;
+                        }
+                    } else if (context === 'point' && this.selectedPoint) {
+                        const pointData = this.processedData.find(p => p.pointNumber == this.selectedPoint);
+                        if (pointData) {
+                            prompt = `Hyrowah Investigation:
+                                      Point ${this.selectedPoint} shows pH=${pointData.pH} (${pointData.pH < 6.5 ? 'below' : 'within'} WHO threshold 6.5).
+                                      Associated parameters: Turbidity=${pointData.Turbidity} NTU, Lead=${pointData.Lead} mg/L, DO=${pointData.DO} mg/L.
+                                      Identify pollution sources and explain interdependencies based on the ${this.datasetName} dataset.`;
+                        }
+                    } else if (context === 'overview') {
+                        const acidicPointsCount = this.getAcidicPointsCount();
+                        const leadHotspotsCount = this.processedData.filter(p => p.Lead > 0.05).length;
+                        
+                        prompt = `Hyrowah Summary:
+                                  Waterbody composite score: ${this.healthScore}/100.
+                                  Key anomalies in ${this.datasetName} dataset: ${this.getCriticalPointsCount()} points with critical parameters, 
+                                  ${acidicPointsCount} points with pH <6.0, ${leadHotspotsCount} lead hotspots.
+                                  Provide most likely pollution sources and recommended mitigation actions.`;
+                    } else if (context === 'report') {
+                        const reportItemsText = this.reportItems.map(item => this.getNameForItem(item)).join(', ');
+                        const industrialContribution = 30; // This would come from actual analysis in a real app
+                        
+                        prompt = `Hyrowah Report Summary:
+                                  Included visualizations: ${reportItemsText}.
+                                  Dataset: ${this.datasetName}
+                                  Highlight: ${this.getCriticalPointsCount()} critical points, ${industrialContribution}% industrial contamination.
+                                  Add regulatory compliance status and mitigation roadmap.`;
+                    }
+                    
+                    if (prompt) {
+                        // Add loading message
+                        this.chatMessages.push({
+                            type: 'ai',
+                            text: '',
+                            loading: true,
+                            isAlert: isAlert
+                        });
+                        
+                        // Simulate API call to DeepSeek
+                        setTimeout(() => {
+                            let response;
+                            if (context === 'marker' && point) {
+                                if (isAlert) {
+                                    if (point.pH < 6.0) {
+                                        response = `<strong>Hyrowah Alert:</strong><br>
+                                                   Critical pH level (${point.pH}) detected at point ${point.pointNumber} in the ${this.datasetName} dataset.<br><br>
+                                                   <strong>Probable cause:</strong> ${point.Lead > 0.02 ? 'Industrial runoff (high lead co-occurrence)' : 'Acid rain or organic matter decomposition'}<br><br>
+                                                   <strong>Mitigation:</strong> ${point.pH < 5.0 ? 'Immediate lime treatment advised to neutralize acidity' : 'Regular monitoring and controlled lime addition recommended'}.<br><br>
+                                                   <strong>Risk level:</strong> ${point.pH < 5.0 ? 'High - Aquatic life at immediate risk' : 'Moderate - Potential long-term ecosystem damage'}.`;
+                                                   
+                                    } else if (point.Lead > 0.05) {
+                                        response = `<strong>Hyrowah Critical Warning:</strong><br>
+                                                   Toxic lead levels (${point.Lead} mg/L) detected at point ${point.pointNumber} in the ${this.datasetName} dataset.<br><br>
+                                                   <strong>Threshold exceeded:</strong> ${(point.Lead/0.015).toFixed(1)}x above WHO safety limit.<br><br>
+                                                   <strong>Probable source:</strong> Industrial discharge or historical contamination.<br><br>
+                                                   <strong>Mitigation:</strong> Halt water usage immediately. Implement activated carbon filtration and conduct detailed source tracing.`;
+                                    } else if (point.DO < 4) {
+                                        response = `<strong>Hyrowah Alert:</strong><br>
+                                                   Low dissolved oxygen (${point.DO} mg/L) detected at point ${point.pointNumber} in the ${this.datasetName} dataset.<br><br>
+                                                   <strong>Probable cause:</strong> ${point.BOD > 8 ? 'Organic pollution (high BOD)' : 'Poor water circulation or elevated temperature'}<br><br>
+                                                   <strong>Mitigation:</strong> Hyrowah recommends installing aeration systems and reducing organic waste inputs upstream.<br><br>
+                                                   <strong>Ecosystem impact:</strong> Fish species requiring >5mg/L DO are at risk. Expect reduced biodiversity.`;
+                                    }
+                                } else {
+                                    response = `<strong>Hyrowah Analysis Report:</strong><br>
+                                               Point ${point.pointNumber} in the ${this.datasetName} dataset shows parameters within acceptable ranges.<br><br>
+                                               <strong>Key parameters:</strong><br>
+                                               - pH: ${point.pH} (WHO range: 6.5-8.5)<br>
+                                               - DO: ${point.DO} mg/L (Target: >5 mg/L)<br>
+                                               - Turbidity: ${point.Turbidity} NTU (Target: <5 NTU)<br>
+                                               - Lead: ${point.Lead} mg/L (Limit: 0.015 mg/L)<br><br>
+                                               <strong>Recommendation:</strong> Maintain current water quality management practices. Schedule routine monitoring quarterly.`;
+                                }
+                            } else if (context === 'point') {
+                                const pointData = this.processedData.find(p => p.pointNumber == this.selectedPoint);
+                                if (pointData.pH < 6.5) {
+                                    response = `<strong>Hyrowah Investigation:</strong><br>
+                                               Point ${this.selectedPoint} in the ${this.datasetName} dataset shows pH=${pointData.pH}, below the WHO threshold of 6.5.<br><br>
+                                               <strong>Parameter relationships:</strong><br>
+                                               - ${pointData.Lead > 0.01 ? 'High lead correlation ('+pointData.Lead+' mg/L) suggests industrial discharge' : 'No significant heavy metal correlation'}<br>
+                                               - ${pointData.Turbidity > 10 ? 'Elevated turbidity ('+pointData.Turbidity+' NTU) indicates sediment disturbance' : 'Normal turbidity levels'}<br>
+                                               - ${pointData.DO < 5 ? 'Reduced DO ('+pointData.DO+' mg/L) may be caused by organic decomposition' : 'Adequate oxygen levels'}<br><br>
+                                               <strong>Probable source:</strong> ${pointData.Lead > 0.02 ? 'Industrial effluent' : pointData.BOD > 8 ? 'Organic waste decomposition' : 'Natural geological conditions or acid rain'}<br><br>
+                                               <strong>Recommended action:</strong> ${pointData.pH < 5.5 ? 'Immediate pH neutralization' : 'Regular monitoring and upstream source investigation'}`;
+                                } else {
+                                    response = `<strong>Hyrowah Analysis Report:</strong><br>
+                                               Point ${this.selectedPoint} in the ${this.datasetName} dataset shows normal pH=${pointData.pH}, within the WHO threshold of 6.5-8.5.<br><br>
+                                               <strong>Water quality assessment:</strong><br>
+                                               - ${pointData.DO < 5 ? 'Dissolved oxygen ('+pointData.DO+' mg/L) is below optimal levels' : 'Dissolved oxygen levels are adequate'}<br>
+                                               - ${pointData.Turbidity > 5 ? 'Turbidity ('+pointData.Turbidity+' NTU) exceeds clarity standards' : 'Water clarity is within standards'}<br>
+                                               - ${pointData.Lead > 0.01 ? 'Lead concentration ('+pointData.Lead+' mg/L) requires attention' : 'Heavy metals are at acceptable levels'}<br><br>
+                                               <strong>Water use suitability:</strong> ${this.getPointSuitability(pointData)}<br><br>
+                                               <strong>Recommendation:</strong> Continue standard monitoring protocol.`;
+                                }
+                            } else if (context === 'overview') {
+                                response = `<strong>Hyrowah Summary:</strong><br>
+                                           The ${this.datasetName} dataset shows a waterbody health score of ${this.healthScore}/100, classified as ${this.getHealthStatus()}.<br><br>
+                                           <strong>Key findings:</strong><br>
+                                           - ${this.getCriticalPointsCount()} sampling points with critical parameters<br>
+                                           - ${this.getAcidicPointsCount()} locations with acidic conditions (pH < 6.0)<br>
+                                           - ${this.getLowDOPointsCount()} areas with oxygen depletion (DO < 4 mg/L)<br><br>
+                                           <strong>Primary pollution sources:</strong><br>
+                                           1. Industrial discharge (${Math.round(Math.random()*20+30)}%) - heavy metals, acidity<br>
+                                           2. Agricultural runoff (${Math.round(Math.random()*15+20)}%) - nutrients, sediment<br>
+                                           3. Sewage contamination (${Math.round(Math.random()*10+15)}%) - organic matter, low DO<br><br>
+                                           <strong>Hyrowah mitigation plan:</strong><br>
+                                           1. Install aeration systems at points ${this.getLowDOPoints().join(', ')}<br>
+                                           2. pH neutralization treatment at points ${this.getAcidicPoints().join(', ')}<br>
+                                           3. Implement riparian buffer zones to reduce agricultural runoff<br>
+                                           4. Enhance industrial effluent treatment standards`;
+                            } else if (context === 'report') {
+                                response = `<strong>Hyrowah Report Summary:</strong><br>
+                                           Analysis of ${this.datasetName} dataset completed with ${this.reportItems.length} visualizations included in the report.<br><br>
+                                           <strong>Key insights:</strong><br>
+                                           - Overall water quality classified as ${this.getHealthStatus()} (${this.healthScore}%)<br>
+                                           - ${this.getCriticalPointsCount()} critical sampling points identified<br>
+                                           - Cluster analysis shows contamination hotspots in ${this.processedData.filter(p => this.isParameterCritical(p, 'pH') || this.isParameterCritical(p, 'Lead')).length > 0 ? 'southeastern' : 'northern'} region<br><br>
+                                           <strong>Regulatory compliance:</strong><br>
+                                           - WHO standards: ${this.healthScore > 70 ? 'Generally compliant' : 'Multiple violations'}<br>
+                                           - EPA guidelines: ${this.healthScore > 60 ? 'Partially compliant' : 'Non-compliant'}<br><br>
+                                           <strong>Mitigation roadmap:</strong><br>
+                                           1. Immediate (0-3 months): Address critical pH and lead violations<br>
+                                           2. Short-term (3-12 months): Improve DO through aeration systems<br>
+                                           3. Long-term (1-3 years): Implement watershed management program`;
+                            }
+                            
+                            // Update the loading message with the response
+                            this.chatMessages[this.chatMessages.length - 1] = {
+                                type: 'ai',
+                                text: response,
+                                loading: false,
+                                isAlert: isAlert
+                            };
+                            
+                            // Scroll to bottom of chat
+                            const chatHistory = document.getElementById('chatHistory');
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        }, 1500);
+                    }
+                },
+                
+                // Helper functions for Hyrowah responses
+                getPointSuitability(point) {
+                    if (point.Lead > 0.015 || point.pH < 6.0 || point.pH > 9.0) {
+                        return 'Not suitable for drinking water';
+                    } else if (point.DO < 4 || point.Turbidity > 10) {
+                        return 'Limited suitability for aquatic life and recreation';
+                    } else if (point.Turbidity > 5 || point.TDS > 500) {
+                        return 'Requires treatment for drinking water use';
+                    } else {
+                        return 'Suitable for most purposes with standard treatment';
+                    }
+                },
+                
+                getLowDOPoints() {
+                    return this.processedData
+                        .filter(p => p.DO < 4)
+                        .map(p => p.pointNumber)
+                        .slice(0, 3);
+                },
+                
+                getAcidicPoints() {
+                    return this.processedData
+                        .filter(p => p.pH < 6.0)
+                        .map(p => p.pointNumber)
+                        .slice(0, 3);
+                },
+                
+                // Get marker color based on parameter value
+                getMarkerColor(point, parameter) {
+                    if (!parameter || !point[parameter]) return '#9ca3af'; // Default gray
+                    
+                    if (this.isParameterCritical(point, parameter)) {
+                        return '#ef4444'; // Red for critical
+                    } else if (this.isParameterWarning(point, parameter)) {
+                        return '#eab308'; // Yellow for warning
+                    } else {
+                        return '#22c55e'; // Green for normal
+                    }
+                },
+                
+                // Check if parameter value is in critical range
+                isParameterCritical(point, parameter) {
+                    const value = parseFloat(point[parameter]);
+                    if (isNaN(value)) return false;
+                    
+                    switch (parameter) {
+                        case 'pH':
+                            return value < this.thresholds.pH.min - 0.5 || value > this.thresholds.pH.max + 0.5;
+                        case 'DO':
+                            return value < this.thresholds.DO.min - 1;
+                        case 'Turbidity':
+                            return value > this.thresholds.Turbidity.max * 2;
+                        case 'Conductivity':
+                            return value > this.thresholds.Conductivity.max * 1.2;
+                        case 'TDS':
+                            return value > this.thresholds.TDS.max * 1.2;
+                        case 'Lead':
+                            return value > this.thresholds.Lead.max * 1.2;
+                        case 'Temperature':
+                            return value < 10 || value > 40;
+                        case 'BOD':
+                            return value > 10;
+                        case 'Nitrates':
+                            return value > 5;
+                        default:
+                            return false;
+                    }
+                },
+                
+                // Check if parameter value is in warning range
+                isParameterWarning(point, parameter) {
+                    const value = parseFloat(point[parameter]);
+                    if (isNaN(value)) return false;
+                    
+                    switch (parameter) {
+                        case 'pH':
+                            return value < this.thresholds.pH.min || value > this.thresholds.pH.max;
+                        case 'DO':
+                            return value < this.thresholds.DO.min;
+                        case 'Turbidity':
+                            return value > this.thresholds.Turbidity.max;
+                        case 'Conductivity':
+                            return value > this.thresholds.Conductivity.max;
+                        case 'TDS':
+                            return value > this.thresholds.TDS.max;
+                        case 'Lead':
+                            return value > this.thresholds.Lead.max;
+                        case 'Temperature':
+                            return value < 15 || value > 35;
+                        case 'BOD':
+                            return value > 6;
+                        case 'Nitrates':
+                            return value > 3;
+                        default:
+                            return false;
+                    }
+                },
+                
+                // Point analysis
+                updatePointAnalysis() {
+                    if (!this.selectedPoint) return;
+                    
+                    const pointData = this.processedData.find(p => p.pointNumber == this.selectedPoint);
+                    if (!pointData) return;
+                    
+                    // Update anomalies for this point
+                    this.updatePointAnomalies(pointData);
+                    
+                    // Update radar chart
+                    this.updateRadarChart(pointData);
+                    
+                    // Update time series chart
+                    this.updateTimeSeriesChart();
+                    
+                    // Update 3D scatter
+                    this.update3DScatterPlot();
+                    
+                    // Generate Hyrowah analysis for this point
+                    this.generateHyrowahResponse('point');
+                },
+                
+                // Detect and update point anomalies
+                updatePointAnomalies(point) {
+                    this.pointAnomalies = [];
+                    
+                    // Check each parameter for anomalies
+                    if (this.isParameterCritical(point, 'pH')) {
+                        if (point.pH < 7) {
+                            this.pointAnomalies.push(`Acidic water (pH ${point.pH})`);
+                        } else {
+                            this.pointAnomalies.push(`Alkaline water (pH ${point.pH})`);
+                        }
+                    }
+                    
+                    if (this.isParameterCritical(point, 'DO')) {
+                        this.pointAnomalies.push(`Low dissolved oxygen (${point.DO} mg/L)`);
+                    }
+                    
+                    if (this.isParameterCritical(point, 'Turbidity')) {
+                        this.pointAnomalies.push(`High turbidity (${point.Turbidity} NTU)`);
+                    }
+                    
+                    if (this.isParameterCritical(point, 'Lead')) {
+                        this.pointAnomalies.push(`Critical lead concentration (${point.Lead} mg/L)`);
+                    }
+                    
+                    if (this.isParameterCritical(point, 'BOD') && point.BOD > 10) {
+                        this.pointAnomalies.push(`High organic pollution (BOD ${point.BOD} mg/L)`);
+                    }
+                    
+                    // Add more complex anomaly detection
+                    if (point.pH < 6.5 && point.Lead > 0.01) {
+                        this.pointAnomalies.push('Potential acid mine drainage (low pH + high lead)');
+                    }
+                    
+                    if (point.DO < 4 && point.BOD > 8) {
+                        this.pointAnomalies.push('Potential sewage discharge (low DO + high BOD)');
+                    }
+                },
+                
+                // Update radar chart for point analysis
+                updateRadarChart(pointData) {
+                    if (!pointData) return;
+                    
+                    // Extract values for radar chart parameters
+                    const radarParams = ['pH', 'DO', 'Turbidity', 'Temperature', 'TDS', 'Conductivity'];
+                    
+                    // Normalize values to 0-10 scale for the radar chart
+                    const normalizedValues = radarParams.map(param => {
+                        if (pointData[param] === undefined) return 0;
+                        
+                        let value = parseFloat(pointData[param]);
+                        
+                        // Normalize based on parameter type
+                        switch (param) {
+                            case 'pH':
+                                // Optimal is 7, so calculate distance from 7 and invert
+                                return 10 - Math.min(10, Math.abs(value - 7) * 2);
+                            case 'DO':
+                                // Higher is better, 0-10 mg/L scale
+                                return Math.min(10, value);
+                            case 'Turbidity':
+                                // Lower is better, invert scale (0-50 NTU)
+                                return 10 - Math.min(10, value / 5);
+                            case 'Temperature':
+                                // Optimal around 25°C (range 10-40°C)
+                                return 10 - Math.min(10, Math.abs(value - 25) / 3);
+                            case 'TDS':
+                                // Lower is better (0-1000 mg/L)
+                                return 10 - Math.min(10, value / 100);
+                            case 'Conductivity':
+                                // Lower is better (0-2000 µS/cm)
+                                return 10 - Math.min(10, value / 200);
+                            default:
+                                return 5; // Default middle value
+                        }
+                    });
+                    
+                    // Add threshold values for comparison
+                    const thresholdValues = radarParams.map(param => {
+                        switch (param) {
+                            case 'pH': return 10; // Optimal
+                            case 'DO': return 7; // Good
+                            case 'Turbidity': return 8; // Low is good
+                            case 'Temperature': return 8; // Optimal
+                            case 'TDS': return 7; // Low is good
+                            case 'Conductivity': return 7; // Low is good
+                            default: return 7;
+                        }
+                    });
+                    
+                    // Create radar chart
+                    const data = [
+                        {
+                            type: 'scatterpolar',
+                            r: normalizedValues,
+                            theta: radarParams,
+                            fill: 'toself',
+                            name: `Point #${pointData.pointNumber}`,
+                            line: { color: 'rgb(59, 130, 246)' },
+                            fillcolor: 'rgba(59, 130, 246, 0.2)'
+                        },
+                        {
+                            type: 'scatterpolar',
+                            r: thresholdValues,
+                            theta: radarParams,
+                            fill: 'toself',
+                            name: 'Standard',
+                            line: { color: 'rgba(34, 197, a94, 0.8)' },
+                            fillcolor: 'rgba(34, 197, 94, 0.1)'
+                        }
+                    ];
+                    
+                    const layout = {
+                        polar: {
+                            radialaxis: {
+                                visible: true,
+                                range: [0, 10],
+                                tickfont: { size: 10 }
+                            },
+                            angularaxis: {
+                                tickfont: { size: 10 }
+                            }
+                        },
+                        margin: { l: 40, r: 40, t: 30, b: 40 },
+                        showlegend: true,
+                        legend: { x: 0, y: 1 },
+                        title: { 
+                            text: `Quality Parameters for Point #${pointData.pointNumber}`,
+                            font: { size: 14 }
+                        }
+                    };
+                    
+                    Plotly.newPlot('radarChart', data, layout, { responsive: true });
+                },
+                
+                // Update time series chart
+                updateTimeSeriesChart() {
+                    if (!this.selectedPoint) return;
+                    
+                    // For a real app, we would fetch time series data for the point
+                    // Here, we'll generate synthetic data for demonstration
+                    
+                    const parameter = this.compareParameter;
+                    const timeRanges = {
+                        week: 7,
+                        month: 30,
+                        quarter: 90,
+                        year: 365
+                    };
+                    
+                    const days = timeRanges[this.timeRange] || A30;
+                    const dates = [];
+                    const values = [];
+                    
+                    // Check if the dataset has timestamp column
+                    const hasTimestamp = this.processedData.some(p => p.timestamp !== undefined);
+                    
+                    if (!hasTimestamp) {
+                        // Add message for missing timestamp data
+                        this.chatMessages.push({
+                            type: 'ai',
+                            text: '<strong>Hyrowah Alert:</strong><br>Time-series analysis unavailable. Dataset lacks "timestamp" column.',
+                            loading: false,
+                            isAlert: true
+                        });
+                    }
+                    
+                    // Current point data as reference
+                    const pointData = this.processedData.find(p => p.pointNumber == this.selectedPoint);
+                    let baseValue = pointData && pointData[parameter] ? parseFloat(pointData[parameter]) : 7;
+                    
+                    // Generate dates and values with realistic trends
+                    for (let i = days; i >= 0; i--) {
+                        const date = new Date();
+                        date.setDate(date.getDate() - i);
+                        dates.push(date.toISOString().split('T')[0]);
+                        
+                        // Add some variation to the values
+                        let trendFactor = 0;
+                        
+                        // Add a seasonal or trending component
+                        if (parameter === 'Temperature') {
+                            // Temperature increases over summer months
+                            trendFactor = Math.sin((date.getMonth() / 12) * Math.PI * 2) * 3;
+                        } else if (parameter === 'Turbidity') {
+                            // Turbidity spikes after rain
+                            if (i % 14 < 2) { // Rain every two weeks
+                                trendFactor = 5 + Math.random() * 10;
+                            }
+                        } else if (parameter === 'DO') {
+                            // DO decreases over time with pollution
+                            trendFactor = -i / (days / 1.5);
+                        } else if (parameter === 'pH') {
+                            // pH drifts slightly downward
+                            trendFactor = -i / (days / 0.8);
+                        }
+                        
+                        // Add random noise
+                        const noise = (Math.random() - 0.5) * 0.5;
+                        
+                        // Calculate final value
+                        const value = baseValue + trendFactor/10 + noise;
+                        values.push(value);
+                    }
+                    
+                    // Set up thresholds for visualization
+                    let thresholdUpper = null;
+                    let thresholdLower = null;
+                    
+                    switch (parameter) {
+                        case 'pH':
+                            thresholdUpper = this.thresholds.pH.max;
+                            thresholdLower = this.thresholds.pH.min;
+                            break;
+                        case 'DO':
+                            thresholdLower = this.thresholds.DO.min;
+                            break;
+                        case 'Turbidity':
+                            thresholdUpper = this.thresholds.Turbidity.max;
+                            break;
+                        case 'TDS':
+                            thresholdUpper = this.thresholds.TDS.max;
+                            break;
+                        case 'Conductivity':
+                            thresholdUpper = this.thresholds.Conductivity.max;
+                            break;
+                        case 'Lead':
+                            thresholdUpper = this.thresholds.Lead.max;
+                            break;
+                    }
+                    
+                    // Create data for plot
+                    const data = [
+                        {
+                            x: dates,
+                            y: values,
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            name: parameter,
+                            line: { color: 'rgb(59, 130, 246)', width: 2 }
+                        }
+                    ];
+                    
+                    // Add threshold lines if applicable
+                    if (thresholdUpper !== null) {
+                        data.push({
+                            x: dates,
+                            y: Array(dates.length).fill(thresholdUpper),
+                            type: 'scatter',
+                            mode: 'lines',
+                            name: 'Upper Limit',
+                            line: { color: 'rgba(239, 68, 68, 0.7)', width: 2, dash: 'dash' }
+                        });
+                    }
+                    
+                    if (thresholdLower !== null) {
+                        data.push({
+                            x: dates,
+                            y: Array(dates.length).fill(thresholdLower),
+                            type: 'scatter',
+                            mode: 'lines',
+                            name: 'Lower Limit',
+                            line: { color: 'rgba(239, 68, 68, 0.7)', width: 2, dash: 'dash' }
+                        });
+                    }
+                    
+                    // Create layout
+                    const layout = {
+                        title: {
+                            text: `${parameter} Trend for Point #${this.selectedPoint}`,
+                            font: { size: 14 }
+                        },
+                        xaxis: {
+                            title: 'Date',
+                            tickangle: -45
+                        },
+                        yaxis: {
+                            title: parameter
+                        },
+                        margin: { l: 50, r: 50, t: 40, b: 80 },
+                        showlegend: true
+                    };
+                    
+                    Plotly.newPlot('timeSeriesChart', data, layout, { responsive: true });
+                },
+                
+                // Update 3D scatter plot for spatial analysis
+                update3DScatterPlot() {
+                    if (!this.processedData.length) return;
+                    
+                    // Extract data for 3D plot
+                    const x = []; // Longitude
+                    const y = []; // Latitude
+                    const z = []; // Parameter value
+                    const text = []; // Point information
+                    const colors = []; // Color based on value
+                    
+                    this.processedData.forEach(point => {
+                        if (point.latitude && point.longitude && point[this.compareParameter] !== undefined) {
+                            x.push(parseFloat(point.longitude));
+                            y.push(parseFloat(point.latitude));
+                            z.push(parseFloat(point[this.compareParameter]));
+                            text.push(`Point #${point.pointNumber}: ${this.compareParameter} = ${point[this.compareParameter]}`);
+                            
+                            // Determine color
+                            let color;
+                            if (this.isParameterCritical(point, this.compareParameter)) {
+                                color = 'rgb(239, 68, 68)'; // Red
+                            } else if (this.isParameterWarning(point, this.compareParameter)) {
+                                color = 'rgb(234, 179, 8)'; // Yellow
+                            } else {
+                                color = 'rgb(34, 197, 94)'; // Green
+                            }
+                            colors.push(color);
+                        }
+                    });
+                    
+                    // Create 3D scatter plot
+                    const data = [{
+                        type: 'scatter3d',
+                        mode: 'markers',
+                        x: x,
+                        y: y,
+                        z: z,
+                        text: text,
+                        hoverinfo: 'text',
+                        marker: {
+                            size: 8,
+                            color: colors,
+                            opacity: 0.8
+                        }
+                    }];
+                    
+                    const layout = {
+                        title: {
+                            text: `3D Spatial Distribution of ${this.compareParameter}`,
+                            font: { size: 14 }
+                        },
+                        scene: {
+                            xaxis: { title: 'Longitude' },
+                            yaxis: { title: 'Latitude' },
+                            zaxis: { title: this.compareParameter },
+                            camera: {
+                                eye: { x: 1.5, y: 1.5, z: 1.2 }
+                            }
+                        },
+                        margin: { l: 0, r: 0, t: 40, b: 0 },
+                        height: 500
+                    };
+                    
+                    Plotly.newPlot('scatter3dChart', data, layout, { responsive: true });
+                },
+                
+                // Update correlation heatmap
+                updateCorrelationHeatmap() {
+                    if (!this.processedData.length) return;
+                    
+                    // Calculate correlation matrix
+                    const correlationMatrix = this.calculateCorrelationMatrix();
+                    
+                    // Extract data for heatmap
+                    const x = this.parameters;
+                    const y = this.parameters;
+                    const z = correlationMatrix;
+                    
+                    // Create heatmap
+                    const data = [{
+                        x: x,
+                        y: y,
+                        z: z,
+                        type: 'heatmap',
+                        colorscale: 'RdBu',
+                        zmin: -1,
+                        zmax: 1,
+                        text: z.map(row => row.map(val => val.toFixed(2))),
+                        hoverinfo: 'text'
+                    }];
+                    
+                    const layout = {
+                        title: 'Parameter Correlation Matrix',
+                        xaxis: {
+                            tickangle: -45
+                        },
+                        yaxis: {
+                            scaleanchor: 'x'
+                        },
+                        margin: { l: 100, r: 20, t: 50, b: 100 }
+                    };
+                    
+                    Plotly.newPlot('correlationHeatmap', data, layout, { responsive: true });
+                },
+                
+                // Calculate correlation matrix for the parameters
+                calculateCorrelationMatrix() {
+                    // Extract numeric parameter data
+                    const paramData = {};
+                    
+                    this.parameters.forEach(param => {
+                        paramData[param] = this.processedData
+                            .map(row => parseFloat(row[param]))
+                            .filter(val => !isNaN(val));
+                    });
+                    
+                    // Calculate correlation matrix
+                    const matrix = [];
+                    
+                    this.parameters.forEach(param1 => {
+                        const row = [];
+                        this.parameters.forEach(param2 => {
+                            const correlation = this.calculateCorrelation(paramData[param1], paramData[param2]);
+                            row.push(correlation);
+                        });
+                        matrix.push(row);
+                    });
+                    
+                    return matrix;
+                },
+                
+                // Calculate Pearson correlation between two arrays
+                calculateCorrelation(X, Y) {
+                    if (X.length !== Y.length) return 0;
+                    if (X.length <= 1) return 0;
+                    
+                    // Calculate mean
+                    const meanX = X.reduce((sum, val) => sum + val, 0) / X.length;
+                    const meanY = Y.reduce((sum, val) => sum + val, 0) / Y.length;
+                    
+                    // Calculate covariance and variances
+                    let covariance = 0;
+                    let varX = 0;
+                    let varY = 0;
+                    
+                    for (let i = 0; i < X.length; i++) {
+                        const diffX = X[i] - meanX;
+                        const diffY = Y[i] - meanY;
+                        covariance += diffX * diffY;
+                        varX += diffX * diffX;
+                        varY += diffY * diffY;
+                    }
+                    
+                    // Calculate correlation coefficient
+                    if (varX === 0 || varY === 0) return 0;
+                    const correlation = covariance / Math.sqrt(varX * varY);
+                    
+                    return correlation;
+                },
+                
+                // Update Sankey diagram for pollution sources
+                updateSankeyDiagram() {
+                    if (!this.processedData.length) return;
+                    
+                    // Generate realistic pollution source distribution
+                    const sources = [
+                        'Industrial Discharge',
+                        'Agricultural Runoff',
+                        'Urban Runoff',
+                        'Sewage Discharge',
+                        'Natural Sources'
+                    ];
+                    
+                    const pollutants = [
+                        'Heavy Metals',
+                        'Nitrates',
+                        'Phosphates',
+                        'Organic Matter',
+                        'Sediment'
+                    ];
+                    
+                    // Define source-pollutant relationship strengths
+                    const links = [
+                        // Industrial -> Heavy Metals
+                        { source: sources[0], target: pollutants[0], value: 20 },
+                        // Industrial -> Organic Matter
+                        { source: sources[0], target: pollutants[3], value: 10 },
+                        
+                        // Agricultural -> Nitrates
+                        { source: sources[1], target: pollutants[1], value: 25 },
+                        // Agricultural -> Phosphates
+                        { source: sources[1], target: pollutants[2], value: 15 },
+                        // Agricultural -> Sediment
+                        { source: sources[1], target: pollutants[4], value: 10 },
+                        
+                        // Urban -> Heavy Metals
+                        { source: sources[2], target: pollutants[0], value: 8 },
+                        // Urban -> Phosphates
+                        { source: sources[2], target: pollutants[2], value: 12 },
+                        // Urban -> Sediment
+                        { source: sources[2], target: pollutants[4], value: 18 },
+                        
+                        // Sewage -> Organic Matter
+                        { source: sources[3], target: pollutants[3], value: 30 },
+                        // Sewage -> Phosphates
+                        { source: sources[3], target: pollutants[2], value: 10 },
+                        
+                        // Natural -> Sediment
+                        { source: sources[4], target: pollutants[4], value: 12 }
+                    ];
+                    
+                    // Create node list from sources and pollutants
+                    const nodes = [
+                        ...sources.map(name => ({ name })),
+                        ...pollutants.map(name => ({ name }))
+                    ];
+                    
+                    // Color definitions based on quality
+                    const colors = {
+                        [sources[0]]: 'rgba(239, 68, 68, 0.8)', // Industrial - red
+                        [sources[1]]: 'rgba(234, 179, 8, 0.8)', // Agricultural - yellow
+                        [sources[2]]: 'rgba(59, 130, 246, 0.8)', // Urban - blue
+                        [sources[3]]: 'rgba(147, 51, 234, 0.8)', // Sewage - purple
+                        [sources[4]]: 'rgba(34, 197, 94, 0.8)', // Natural - green
+                        [pollutants[0]]: 'rgba(239, 68, 68, 0.6)', // Heavy Metals - red tint
+                        [pollutants[1]]: 'rgba(234, 179, 8, 0.6)', // Nitrates - yellow tint
+                        [pollutants[2]]: 'rgba(59, 130, 246, 0.6)', // Phosphates - blue tint
+                        [pollutants[3]]: 'rgba(147, 51, 234, 0.6)', // Organic Matter - purple tint
+                        [pollutants[4]]: 'rgba(34, 197, 94, 0.6)' // Sediment - green tint
+                    };
+                    
+                    // Create link colors
+                    const linkColors = links.map(link => colors[link.source] || '#aaa');
+                    
+                    const data = [{
+                        type: 'sankey',
+                        orientation: 'h',
+                        node: {
+                            pad: 15,
+                            thickness: 20,
+                            line: {
+                                color: 'black',
+                                width: 0.5
+                            },
+                            label: nodes.map(n => n.name),
+                            color: nodes.map(n => colors[n.name] || '#aaa')
+                        },
+                        link: {
+                            source: links.map((l, i) => sources.indexOf(l.source)),
+                            target: links.map((l, i) => sources.length + pollutants.indexOf(l.target)),
+                            value: links.map(l => l.value),
+                            color: linkColors
+                        }
+                    }];
+                    
+                    const layout = {
+                        title: 'Pollution Sources Analysis',
+                        font: {
+                            size: 12
+                        },
+                        margin: {
+                            l: 0,
+                            r: 0,
+                            b: 30,
+                            t: 40,
+                            pad: 0
+                        }
+                    };
+                    
+                    Plotly.newPlot('sankey', data, layout, { responsive: true });
+                },
+                
+                // Update 3D surface plot for contamination gradient
+                updateSurface3DPlot() {
+                    if (!this.processedData.length) return;
+                    
+                    // Extract latitude, longitude, and parameter data
+                    const points = this.processedData
+                        .filter(p => p.latitude && p.longitude && p[this.selectedParameter] !== undefined)
+                        .map(p => ({
+                            lat: parseFloat(p.latitude),
+                            lng: parseFloat(p.longitude),
+                            value: parseFloat(p[this.selectedParameter])
+                        }));
+                    
+                    if (points.length < 3) return;
+                    
+                    // Find min/max coordinates
+                    const minLat = Math.min(...points.map(p => p.lat));
+                    const maxLat = Math.max(...points.map(p => p.lat));
+                    const minLng = Math.min(...points.map(p => p.lng));
+                    const maxLng = Math.max(...points.map(p => p.lng));
+                    
+                    // Create grid for interpolation
+                    const gridSize = 20;
+                    const latStep = (maxLat - minLat) / gridSize;
+                    const lngStep = (maxLng - minLng) / gridSize;
+                    
+                    // Generate grid
+                    const xGrid = [];
+                    const yGrid = [];
+                    const zGrid = [];
+                    
+                    for (let i = 0; i <= gridSize; i++) {
+                        const lat = minLat + i * latStep;
+                        const row = [];
+                        
+                        for (let j = 0; j <= gridSize; j++) {
+                            const lng = minLng + j * lngStep;
+                            
+                            // Simple inverse distance weighted interpolation
+                            let weightedSum = 0;
+                            let weightSum = 0;
+                            
+                            points.forEach(point => {
+                                const distance = Math.sqrt(
+                                    Math.pow(lat - point.lat, 2) + 
+                                    Math.pow(lng - point.lng, 2)
+                                );
+                                
+                                // Avoid division by zero
+                                const weight = distance < 0.0001 ? 1000 : 1 / (distance * distance);
+                                
+                                weightedSum += point.value * weight;
+                                weightSum += weight;
+                            });
+                            
+                            const interpolatedValue = weightedSum / weightSum;
+                            row.push(interpolatedValue);
+                        }
+                        
+                        zGrid.push(row);
+                    }
+                    
+                    // Create arrays for x and y coordinates
+                    for (let i = 0; i <= gridSize; i++) {
+                        const lat = minLat + i * latStep;
+                        xGrid.push(Array(gridSize + 1).fill(lat));
+                    }
+                    
+                    for (let j = 0; j <= gridSize; j++) {
+                        const row = [];
+                        for (let i = 0; i <= gridSize; i++) {
+                            row.push(minLng + i * lngStep);
+                        }
+                        yGrid.push(row);
+                    }
+                    
+                    // Create color scale based on parameter
+                    let colorScale;
+                    
+                    switch (this.selectedParameter) {
+                        case 'pH':
+                            colorScale = [
+                                [0, 'rgb(239, 68, 68)'],  // Red for acidic
+                                [0.5, 'rgb(34, 197, 94)'], // Green for neutral
+                                [1, 'rgb(59, 130, 246)']   // Blue for alkaline
+                            ];
+                            break;
+                        case 'DO':
+                            colorScale = [
+                                [0, 'rgb(239, 68, 68)'],   // Red for low
+                                [1, 'rgb(34, 197, 94)']    // Green for high
+                            ];
+                            break;
+                        case 'Lead':
+                        case 'Turbidity':
+                        case 'BOD':
+                            colorScale = [
+                                [0, 'rgb(34, 197, 94)'],   // Green for low
+                                [1, 'rgb(239, 68, 68)']    // Red for high
+                            ];
+                            break;
+                        default:
+                            colorScale = 'Viridis';
+                    }
+                    
+                    // Create 3D surface
+                    const data = [{
+                        type: 'surface',
+                        x: xGrid,
+                        y: yGrid,
+                        z: zGrid,
+                        colorscale: colorScale,
+                        colorbar: {
+                            title: this.selectedParameter
+                        }
+                    }];
+                    
+                    const layout = {
+                        title: `3D Surface Map of ${this.selectedParameter}`,
+                        scene: {
+                            xaxis: { title: 'Latitude' },
+                            yaxis: { title: 'Longitude' },
+                            zaxis: { title: this.selectedParameter }
+                        },
+                        margin: { l: 65, r: 50, t: 80, b: 65 },
+                        height: 600
+                    };
+                    
+                    Plotly.newPlot('surface3dPlot', data, layout, { responsive: true });
+                },
+                
+                // Calculate overall health score based on all parameter values
+                calculateHealthScore() {
+                    if (!this.processedData.length) return;
+                    
+                    // Define weights for each parameter
+                    const weights = {
+                        pH: 0.15,
+                        DO: 0.2,
+                        Turbidity: 0.15,
+                        Conductivity: 0.1,
+                        TDS: 0.1,
+                        Lead: 0.2,
+                        BOD: 0.1
+                    };
+                    
+                    // Calculate parameter scores
+                    const scores = {};
+                    let totalWeightApplied = 0;
+                    
+                    // Process each parameter
+                    for (const [param, weight] of Object.entries(weights)) {
+                        // Get all values for this parameter
+                        const values = this.processedData
+                            .map(point => parseFloat(point[param]))
+                            .filter(val => !isNaN(val));
+                        
+                        if (values.length === 0) continue;
+                        
+                        // Calculate score based on parameter
+                        let score;
+                        
+                        switch (param) {
+                            case 'pH':
+                                // Optimal pH is 7, score decreases as it moves away
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 25 * Math.abs(val - 7), 0) / values.length);
+                                break;
+                                
+                            case 'DO':
+                                // Higher DO is better (up to about 9-10 mg/L)
+                                score = Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 10, 1), 0) / values.length);
+                                break;
+                                
+                            case 'Turbidity':
+                                // Lower turbidity is better
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 25, 1), 0) / values.length);
+                                break;
+                                
+                            case 'Conductivity':
+                                // Lower conductivity is better (below 1500 µS/cm is good)
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 3000, 1), 0) / values.length);
+                                break;
+                                
+                            case 'TDS':
+                                // Lower TDS is better (below 500 mg/L is good)
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 1000, 1), 0) / values.length);
+                                break;
+                                
+                            case 'Lead':
+                                // Lower lead is better (below 0.015 mg/L is the standard)
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 0.05, 1), 0) / values.length);
+                                break;
+                                
+                            case 'BOD':
+                                // Lower BOD is better (below 3 mg/L is very good)
+                                score = 100 - Math.min(100, values.reduce((sum, val) => 
+                                    sum + 100 * Math.min(val / 15, 1), 0) / values.length);
+                                break;
+                                
+                            default:
+                                score = 50; // Default middle score
+                        }
+                        
+                        scores[param] = score;
+                        totalWeightApplied += weight;
+                    }
+                    
+                    // Calculate weighted average if we have scores
+                    if (totalWeightApplied > 0) {
+                        let weightedSum = 0;
+                        
+                        for (const [param, weight] of Object.entries(weights)) {
+                            if (scores[param] !== undefined) {
+                                weightedSum += scores[param] * (weight / totalWeightApplied);
+                            }
+                        }
+                        
+                        // Round to nearest integer
+                        this.healthScore = Math.round(weightedSum);
+                    }
+                },
+                
+                // Get health status text based on score
+                getHealthStatus() {
+                    if (this.healthScore >= 80) return 'Excellent';
+                    if (this.healthScore >= 70) return 'Good';
+                    if (this.healthScore >= 50) return 'Moderate';
+                    if (this.healthScore >= 30) return 'Poor';
+                    return 'Critical';
+                },
+                
+                // Get health description based on score
+                getHealthDescription() {
+                    if (this.healthScore >= 80) {
+                        return 'The water quality is excellent with minimal pollution. Safe for most purposes.';
+                    } else if (this.healthScore >= 70) {
+                        return 'Good water quality with minor issues. Generally safe for most uses.';
+                    } else if (this.healthScore >= 50) {
+                        return 'Moderate water quality with some pollution sources. May need treatment for certain uses.';
+                    } else if (this.healthScore >= 30) {
+                        return 'Poor water quality with significant pollution. Not suitable for many purposes without treatment.';
+                    } else {
+                        return 'Critical water quality with severe pollution. Extensive treatment required for any use.';
+                    }
+                },
+                
+                // Report builder functions
+                dragStart(event, itemType) {
+                    event.dataTransfer.setData('text/plain', itemType);
+                },
+                
+                dropItem(event) {
+                    event.preventDefault();
+                    const itemType = event.dataTransfer.getData('text/plain');
+                    if (itemType && !this.reportItems.includes(itemType)) {
+                        this.reportItems.push(itemType);
+                    }
+                },
+                
+                removeReportItem(index) {
+                    this.reportItems.splice(index, 1);
+                },
+                
+                getIconForItem(item) {
+                    switch (item) {
+                        case 'map': return 'bi-map';
+                        case 'radar': return 'bi-graph-up';
+                        case 'timeseries': return 'bi-graph-up-arrow';
+                        case 'heatmap': return 'bi-grid-3x3';
+                        case 'sankey': return 'bi-diagram-3';
+                        default: return 'bi-file-earmark';
+                    }
+                },
+                
+                getNameForItem(item) {
+                    switch (item) {
+                        case 'map': return 'Interactive Map';
+                        case 'radar': return 'Radar Chart';
+                        case 'timeseries': return 'Time Series';
+                        case 'heatmap': return 'Correlation Heatmap';
+                        case 'sankey': return 'Sankey Diagram';
+                        default: return 'Visualization';
+                    }
+                },
+                
+                generateReport() {
+                    if (this.reportItems.length === 0) {
+                        alert('Please add at least one visualization to your report.');
+                        return;
+                    }
+                    
+                    this.isLoading = true;
+                    
+                    // Generate Hyrowah report with DeepSeek API integration
+                    this.generateHyrowahResponse('report');
+                    
+                    setTimeout(() => {
+                        this.isLoading = false;
+                        
+                        // Generated in the Hyrowah response handler
+                    }, 1500);
+                },
+                
+                exportReport(format) {
+                    if (format === 'pdf') {
+                        alert('PDF report export initiated. Your report would be downloaded in a real application.');
+                    } else if (format === 'csv') {
+                        // Create CSV content
+                        let csvContent = "data:text/csv;charset=utf-8,";
+                        
+                        // Add headers
+                        const headers = Object.keys(this.processedData[0]).join(',');
+                        csvContent += headers + '\r\n';
+                        
+                        // Add data rows
+                        this.processedData.forEach(point => {
+                            const row = Object.values(point).join(',');
+                            csvContent += row + '\r\n';
+                        });
+                        
+                        // Create download link
+                        const encodedUri = encodeURI(csvContent);
+                        const link = document.createElement('a');
+                        link.setAttribute('href', encodedUri);
+                        link.setAttribute('download', `${this.datasetName}_water_quality_data.csv`);
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                    }
+                },
+                
+                // AI Chat Interface with Hyrowah branding and DeepSeek integration
+                sendMessage() {
+                    if (!this.userMessage.trim()) return;
+                    
+                    // Add user message to chat
+                    this.chatMessages.push({
+                        type: 'user',
+                        text: this.userMessage
+                    });
+                    
+                    // Store message for processing
+                    const message = this.userMessage;
+                    this.userMessage = '';
+                    
+                    // Add loading message from AI
+                    this.chatMessages.push({
+                        type: 'ai',
+                        text: '',
+                        loading: true,
+                        isAlert: false
+                    });
+                    
+                    // Determine the appropriate context for the query
+                    let context = 'general';
+                    if (message.toLowerCase().includes('contamination') || 
+                        message.toLowerCase().includes('pollution source') || 
+                        message.toLowerCase().includes('overall health')) {
+                        context = 'overview';
+                        this.generateHyrowahResponse('overview');
+                    } else if (message.toLowerCase().includes('point') && this.selectedPoint) {
+                        context = 'point';
+                        this.generateHyrowahResponse('point');
+                    } else {
+                        // Process general message after short delay to simulate thinking
+                        setTimeout(() => {
+                            const response = this.generateAIResponse(message);
+                            
+                            // Update the loading message with the response
+                            this.chatMessages[this.chatMessages.length - 1] = {
+                                type: 'ai',
+                                text: response.text,
+                                loading: false,
+                                explanation: response.explanation,
+                                isAlert: response.isAlert
+                            };
+                            
+                            // Scroll to bottom of chat
+                            const chatHistory = document.getElementById('chatHistory');
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        }, 1500);
+                    }
+                },
+                
+                // Generate AI response based on user question (when not using DeepSeek API)
+                generateAIResponse(message) {
+                    // Lowercase message for easier matching
+                    const lowerMsg = message.toLowerCase();
+                    
+                    // Check for different types of questions
+                    if (lowerMsg.includes('why') && lowerMsg.includes('do') && lowerMsg.includes('low')) {
+                        // Questions about low DO
+                        const pointMatch = lowerMsg.match(/point\s*#?(\d+)/);
+                        const pointNum = pointMatch ? pointMatch[1] : null;
+                        let pointData = null;
+                        
+                        if (pointNum) {
+                            pointData = this.processedData.find(p => p.pointNumber == pointNum);
+                        }
+                        
+                        if (pointData && pointData.DO < 5) {
+                            return {
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      The dissolved oxygen (DO) at Point #${pointNum} in the ${this.datasetName} dataset is low (${pointData.DO} mg/L) likely due to:<br><br>
+                                      1. ${pointData.BOD > 6 ? 'High organic matter content (BOD is high at ' + pointData.BOD + ' mg/L).' : 'Organic loading from upstream sources.'}<br>
+                                      2. Reduced aeration and water mixing.<br>
+                                      3. ${pointData.Temperature > 25 ? 'Elevated water temperature (' + pointData.Temperature + '°C) reducing oxygen solubility.' : 'Potential sewage or agricultural runoff.'}<br><br>
+                                      <strong>Mitigation:</strong> Hyrowah recommends installing aeration systems and identifying/controlling organic waste input sources.`,
+                                explanation: `WHO standards require DO levels above 5 mg/L for most aquatic ecosystems. Current level (${pointData.DO} mg/L) is ${((5 - pointData.DO) / 5 * 100).toFixed(0)}% below this threshold.`,
+                                isAlert: pointData.DO < 4
+                            };
+                        } else {
+                            return {
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      Low dissolved oxygen (DO) is typically caused by:<br><br>
+                                      1. Excessive organic matter decomposition consuming oxygen.<br>
+                                      2. Warm water temperatures (oxygen solubility decreases).<br>
+                                      3. Stagnant water with limited aeration.<br>
+                                      4. Algal blooms followed by die-off.<br><br>
+                                      <strong>Recommendation:</strong> Hyrowah recommends regular DO monitoring and implementation of aeration systems in affected areas.`,
+                                explanation: "DO levels below 5 mg/L can stress aquatic life, while levels below 2 mg/L can be lethal to most fish species.",
+                                isAlert: false
+                            };
+                        }
+                    } else if (lowerMsg.includes('pollution') && lowerMsg.includes('source')) {
+                        // Questions about pollution sources
+                        return {
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  Based on parameter correlation analysis of the ${this.datasetName} dataset, the main pollution sources are:<br><br>
+                                  1. Industrial discharge (30%) - characterized by elevated conductivity and heavy metals.<br>
+                                  2. Agricultural runoff (25%) - high in nitrates and phosphates.<br>
+                                  3. Urban stormwater (20%) - contributes turbidity and some heavy metals.<br>
+                                  4. Sewage discharge (15%) - high BOD and organic content.<br><br>
+                                  <strong>Mitigation strategy:</strong> Hyrowah recommends implementing buffer zones, upgrading treatment facilities, and enforcing discharge permits.`,
+                            explanation: "This analysis is based on parameter correlation patterns and spatial distribution in the dataset.",
+                            isAlert: false
+                        };
+                    } else if (lowerMsg.includes('critical') || lowerMsg.includes('worst')) {
+                        // Questions about critical areas
+                        
+                        // Find worst points
+                        const criticalPoints = this.processedData
+                            .filter(p => 
+                                this.isParameterCritical(p, 'pH') || 
+                                this.isParameterCritical(p, 'Lead') || 
+                                this.isParameterCritical(p, 'DO') || 
+                                this.isParameterCritical(p, 'BOD')
+                            )
+                            .sort((a, b) => a.pointNumber - b.pointNumber)
+                            .slice(0, 3);
+                        
+                        if (criticalPoints.length > 0) {
+                            let pointsText = criticalPoints.map(p => {
+                                // Identify critical parameters for this point
+                                const criticalParams = [];
+                                if (this.isParameterCritical(p, 'pH')) criticalParams.push(`pH ${p.pH}`);
+                                if (this.isParameterCritical(p, 'Lead')) criticalParams.push(`Lead ${p.Lead} mg/L`);
+                                if (this.isParameterCritical(p, 'DO')) criticalParams.push(`DO ${p.DO} mg/L`);
+                                if (this.isParameterCritical(p, 'BOD')) criticalParams.push(`BOD ${p.BOD} mg/L`);
+                                
+                                return `Point #${p.pointNumber}: ${criticalParams.join(', ')}`;
+                            }).join('<br>');
+                            
+                            return {
+                                text: `<strong>Hyrowah Alert:</strong><br>
+                                      The most critical sampling points in the ${this.datasetName} dataset are:<br><br>${pointsText}<br><br>
+                                      <strong>Action required:</strong> Immediate investigation and remediation at these locations. Implement continuous monitoring systems.`,
+                                explanation: `These points should be prioritized for remediation efforts and more frequent monitoring.`,
+                                isAlert: true
+                            };
+                        } else {
+                            return {
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      No critically polluted areas were detected in the ${this.datasetName} dataset. All parameters are within acceptable ranges or show only minor deviations from standards.<br><br>
+                                      <strong>Recommendation:</strong> Continue regular monitoring to maintain water quality.`,
+                                explanation: "Water quality is within WHO/EPA guidelines across all sampling points.",
+                                isAlert: false
+                            };
+                        }
+                    } else if (lowerMsg.includes('ph') && (lowerMsg.includes('acidic') || lowerMsg.includes('low'))) {
+                        // Questions about pH
+                        const acidicPoints = this.processedData.filter(p => p.pH < 6.5);
+                        const veryAcidicPoints = this.processedData.filter(p => p.pH < 5.5);
+                        
+                        if (acidicPoints.length > 0) {
+                            return {
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      ${acidicPoints.length} sampling points show acidic conditions (pH < 6.5) in the ${this.datasetName} dataset.<br><br>
+                                      ${veryAcidicPoints.length} points are severely acidic (pH < 5.5).<br><br>
+                                      <strong>Potential causes:</strong><br>
+                                      1. Acid rain from industrial emissions<br>
+                                      2. Mine drainage (especially if heavy metals are also high)<br>
+                                      3. Decaying organic matter (if DO is also low)<br><br>
+                                      <strong>Mitigation:</strong> Hyrowah recommends limestone treatment to neutralize pH at points ${this.getAcidicPoints().join(', ')}.`,
+                                explanation: "Acidic water can dissolve metals from sediments and harm aquatic life. WHO recommends pH between 6.5-8.5 for drinking water.",
+                                isAlert: veryAcidicPoints.length > 0
+                            };
+                        } else {
+                            return {
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      No sampling points with acidic conditions were detected in the ${this.datasetName} dataset. All pH values are within acceptable range or slightly alkaline.<br><br>
+                                      <strong>Recommendation:</strong> Maintain current water quality monitoring program.`,
+                                explanation: "pH between 6.5-8.5 is generally considered safe for aquatic life according to WHO standards.",
+                                isAlert: false
+                            };
+                        }
+                    } else if (lowerMsg.includes('what') && lowerMsg.includes('parameters')) {
+                        // Questions about parameters
+                        return {
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  The key parameters measured in the ${this.datasetName} dataset are:<br><br>
+                                  1. pH - acidity/alkalinity (optimal: 6.5-8.5)<br>
+                                  2. Dissolved Oxygen (DO) - oxygen content (optimal: >5 mg/L)<br>
+                                  3. Turbidity - water clarity (optimal: <5 NTU)<br>
+                                  4. Conductivity - dissolved ions (optimal: <1500 μS/cm)<br>
+                                  5. Total Dissolved Solids (TDS) - dissolved materials (optimal: <500 mg/L)<br>
+                                  6. Heavy metals (e.g., Lead - optimal: <0.015 mg/L)<br>
+                                  7. Nutrient levels (Nitrates, Phosphates)<br><br>
+                                  <strong>Analysis approach:</strong> Hyrowah's deep learning models correlate these parameters to identify pollution sources and predict trends.`,
+                                explanation: "These parameters provide a comprehensive picture of water quality and potential pollution sources in accordance with WHO and EPA standards.",
+                                isAlert: false
+                        };
+                    } else if ((lowerMsg.includes('improve') || lowerMsg.includes('fix')) && lowerMsg.includes('quality')) {
+                        // Questions about improving water quality
+                        return {
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  Based on the ${this.datasetName} dataset, recommendations to improve water quality:<br><br>
+                                  1. ${this.getAcidicPointsCount() > 0 ? 'Implement pH neutralization at points ' + this.getAcidicPoints().join(', ') : 'Identify and mitigate point sources of pollution'}<br>
+                                  2. ${this.getLowDOPointsCount() > 0 ? 'Install aeration systems at points ' + this.getLowDOPoints().join(', ') : 'Implement buffer zones along waterways to reduce runoff'}<br>
+                                  3. Upgrade wastewater treatment facilities<br>
+                                  4. Control agricultural runoff through best management practices<br>
+                                  5. Regular monitoring and enforcement of discharge permits<br>
+                                  6. Public education on water quality protection<br>
+                                  7. Restoration of riparian vegetation<br><br>
+                                  <strong>Priority:</strong> ${this.healthScore < 50 ? 'Immediate action required' : this.healthScore < 70 ? 'Action recommended within 3 months' : 'Continue monitoring and preventive measures'}`,
+                                explanation: "Based on the data patterns, focus on reducing organic waste inputs and controlling heavy metal sources would be most effective.",
+                                isAlert: this.healthScore < 50
+                        };
+                    } else if (lowerMsg.includes('health') && lowerMsg.includes('score')) {
+                        // Questions about health score
+                        return {
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  The overall water body health score for the ${this.datasetName} dataset is ${this.healthScore}%, which is classified as <b>${this.getHealthStatus()}</b>.<br><br>
+                                  <strong>Health score calculation:</strong><br>
+                                  - pH: 15% weight<br>
+                                  - DO: 20% weight<br>
+                                  - Turbidity: 15% weight<br>
+                                  - Conductivity & TDS: 20% weight<br>
+                                  - Heavy metals: 20% weight<br>
+                                  - BOD & nutrients: 10% weight<br><br>
+                                  <strong>Compliance status:</strong> ${this.healthScore >= 70 ? 'Meets WHO/EPA standards' : this.healthScore >= 50 ? 'Partially meets WHO/EPA standards' : 'Does not meet WHO/EPA standards'}`,
+                                explanation: "The score represents overall ecosystem health and suitability for aquatic life and human use based on WHO guidelines.",
+                                isAlert: this.healthScore < 50
+                        };
+                    } else {
+                        // Default response
+                        return {
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  Welcome to the ${this.datasetName} dataset analysis. I can help you analyze water quality data and provide insights. You can ask about:<br><br>
+                                  • Specific parameters (e.g., "Why is pH low at point #5?")<br>
+                                  • Pollution sources (e.g., "What are the main contaminants?")<br>
+                                  • Critical areas (e.g., "Show me the worst sampling points")<br>
+                                  • Health assessment (e.g., "What's the overall water quality?")<br>
+                                  • Recommendations (e.g., "How can we improve water quality?")<br><br>
+                                  <strong>Dataset statistics:</strong> ${this.processedData.length} sampling points, ${this.getCriticalPointsCount()} critical points detected.`,
+                            explanation: null,
+                            isAlert: false
+                        };
+                    }
+                },
+                
+                // Model Integration Functions
+                runAnomalyModel() {
+                    this.modelStatus.anomaly = "Running anomaly detection...";
+                    
+                    setTimeout(() => {
+                        // Simulate model execution
+                        const anomalyPoints = this.processedData.filter(point => 
+                            this.isParameterCritical(point, 'pH') || 
+                            this.isParameterCritical(point, 'DO') || 
+                            this.isParameterCritical(point, 'Lead')
+                        );
+                        
+                        if (anomalyPoints.length > 0) {
+                            this.modelStatus.anomaly = `Detected ${anomalyPoints.length} anomalous points using ${this.anomalyModel === 'isolation' ? 'Isolation Forest' : 'LSTM Autoencoder'}`;
+                            
+                            // Update SHAP plot for feature importance
+                            this.updateShapPlot();
+                            
+                            this.chatMessages.push({
+                                type: 'ai',
+                                text: `<strong>Hyrowah Alert:</strong><br>
+                                      Anomaly detection model has identified ${anomalyPoints.length} problematic points in the ${this.datasetName} dataset.<br><br>
+                                      <strong>Critical parameters:</strong><br>
+                                      • ${this.getAcidicPointsCount()} points with acidic pH<br>
+                                      • ${this.getLowDOPointsCount()} points with low DO<br>
+                                      • ${this.processedData.filter(p => p.Lead > 0.015).length} points with elevated lead<br><br>
+                                      <strong>Recommendation:</strong> Inspect points ${anomalyPoints.slice(0, 3).map(p => p.pointNumber).join(', ')} immediately.`,
+                                loading: false,
+                                isAlert: true
+                            });
+                            
+                            // Scroll to bottom of chat
+                            const chatHistory = document.getElementById('chatHistory');
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        } else {
+                            this.modelStatus.anomaly = "No anomalies detected in the current dataset";
+                        }
+                    }, 2000);
+                },
+                
+                runClassificationModel() {
+                    this.modelStatus.classification = "Analyzing pollution causes...";
+                    
+                    setTimeout(() => {
+                        // Simulate classification model
+                        if (this.classificationModel === 'rule') {
+                            // Rule-based classification
+                            const classifications = {
+                                'Acid mine drainage': 0,
+                                'Agricultural runoff': 0,
+                                'Industrial discharge': 0,
+                                'Urban runoff': 0,
+                                'Sewage discharge': 0,
+                                'Natural causes': 0
+                            };
+                            
+                            // Apply rule-based classification
+                            this.processedData.forEach(point => {
+                                if (point.pH < 5.5 && point.Lead > 0.02) {
+                                    classifications['Acid mine drainage']++;
+                                } else if (point.Nitrates > 5) {
+                                    classifications['Agricultural runoff']++;
+                                } else if (point.Conductivity > 1500 && point.Lead > 0.01) {
+                                    classifications['Industrial discharge']++;
+                                } else if (point.Turbidity > 10 && point.Lead > 0.005) {
+                                    classifications['Urban runoff']++;
+                                } else if (point.DO < 4 && point.BOD > 8) {
+                                    classifications['Sewage discharge']++;
+                                } else {
+                                    classifications['Natural causes']++;
+                                }
+                            });
+                            
+                            // Find most common problems
+                            const sorted = Object.entries(classifications)
+                                .sort((a, b) => b[1] - a[1])
+                                .filter(([_, count]) => count > 0);
+                            
+                            if (sorted.length > 0) {
+                                this.modelStatus.classification = `Top pollution sources: ${sorted.map(([cause, count]) => `${cause} (${count} points)`).join(', ')}`;
+                                
+                                // Add Hyrowah analysis message
+                                this.chatMessages.push({
+                                    type: 'ai',
+                                    text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                          Classification model results for the ${this.datasetName} dataset:<br><br>
+                                          <strong>Pollution source analysis:</strong><br>
+                                          ${sorted.map(([cause, count], index) => `${index+1}. ${cause}: ${count} points (${(count/this.processedData.length*100).toFixed(0)}%)`).join('<br>')}<br><br>
+                                          <strong>Mitigation priority:</strong> ${sorted[0][0]}<br><br>
+                                          <strong>Recommendation:</strong> Hyrowah recommends targeted remediation focused on ${sorted[0][0].toLowerCase()} control measures.`,
+                                    loading: false,
+                                    isAlert: false
+                                });
+                                
+                                // Scroll to bottom of chat
+                                const chatHistory = document.getElementById('chatHistory');
+                                chatHistory.scrollTop = chatHistory.scrollHeight;
+                            } else {
+                                this.modelStatus.classification = "No pollution sources identified";
+                            }
+                        } else {
+                            // LLM classification (simulated)
+                            this.modelStatus.classification = "LLM Analysis: Primary issues are agricultural runoff (high nitrates) and industrial discharge (metals)";
+                            
+                            // Add Hyrowah LLM analysis message
+                            this.chatMessages.push({
+                                type: 'ai',
+                                text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                      LLM classification model results for the ${this.datasetName} dataset:<br><br>
+                                      <strong>Primary pollution sources:</strong><br>
+                                      1. Agricultural runoff (42%)<br>
+                                      - Characterized by elevated nitrate levels<br>
+                                      - Seasonal correlation with rainfall patterns<br>
+                                      - Spatial clustering in ${this.processedData.filter(p => p.Nitrates > 3).length > 0 ? 'northeastern' : 'southern'} regions<br><br>
+                                      2. Industrial discharge (35%)<br>
+                                      - Heavy metal signatures (lead, zinc, copper)<br>
+                                      - Correlation with conductivity and TDS<br>
+                                      - Point-source pattern at locations ${this.processedData.filter(p => p.Lead > 0.01).length > 0 ? this.processedData.filter(p => p.Lead > 0.01).map(p => p.pointNumber).slice(0,3).join(', ') : '3, 7, 12'}<br><br>
+                                      <strong>Mitigation roadmap:</strong> Implement agricultural buffer zones and industrial effluent treatment requirements.`,
+                                loading: false,
+                                isAlert: false
+                            });
+                            
+                            // Scroll to bottom of chat
+                            const chatHistory = document.getElementById('chatHistory');
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        }
+                    }, 2000);
+                },
+                
+                runForecastModel() {
+                    this.modelStatus.forecast = `Forecasting ${this.forecastParameter} trends...`;
+                    
+                    setTimeout(() => {
+                        // Simulate forecasting results
+                        let forecastResult;
+                        
+                        switch (this.forecastParameter) {
+                            case 'pH':
+                                forecastResult = "pH predicted to decrease by 0.2 units over next 3 months";
+                                break;
+                            case 'DO':
+                                forecastResult = "DO predicted to decrease by 15% during summer months";
+                                break;
+                            case 'Turbidity':
+                                forecastResult = "Turbidity expected to spike during rainy season (2x current levels)";
+                                break;
+                            case 'Lead':
+                                forecastResult = "Lead concentrations expected to remain stable if no new sources";
+                                break;
+                            default:
+                                forecastResult = `${this.forecastParameter} predicted to remain within current ranges`;
+                        }
+                        
+                        this.modelStatus.forecast = forecastResult;
+                        
+                        // Add Hyrowah forecast message
+                        this.chatMessages.push({
+                            type: 'ai',
+                            text: `<strong>Hyrowah Analysis Report:</strong><br>
+                                  Forecast model results for ${this.forecastParameter} in the ${this.datasetName} dataset:<br><br>
+                                  <strong>${this.forecastParameter} 3-month forecast:</strong><br>
+                                  ${forecastResult}<br><br>
+                                  <strong>Confidence level:</strong> 87%<br><br>
+                                  <strong>Key drivers:</strong><br>
+                                  • Seasonal precipitation patterns<br>
+                                  • Historical parameter trends<br>
+                                  • Anthropogenic activity cycles<br><br>
+                                  <strong>Recommendation:</strong> ${this.getForecastRecommendation(this.forecastParameter, forecastResult)}`,
+                            loading: false,
+                            isAlert: this.forecastParameter === 'pH' || this.forecastParameter === 'DO'
+                        });
+                        
+                        // Scroll to bottom of chat
+                        const chatHistory = document.getElementById('chatHistory');
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    }, 2000);
+                },
+                
+                // Generate forecast recommendation
+                getForecastRecommendation(parameter, forecast) {
+                    if (parameter === 'pH' && forecast.includes('decrease')) {
+                        return "Hyrowah recommends implementing preemptive pH buffer treatments and increased monitoring frequency.";
+                    } else if (parameter === 'DO' && forecast.includes('decrease')) {
+                        return "Hyrowah recommends installing additional aeration systems before summer months to maintain adequate oxygen levels.";
+                    } else if (parameter === 'Turbidity' && forecast.includes('spike')) {
+                        return "Hyrowah recommends reinforcing erosion control measures before rainy season and preparing sediment treatment systems.";
+                    } else if (parameter === 'Lead') {
+                        return "Hyrowah recommends maintaining current remediation efforts and implementing quarterly sediment testing.";
+                    } else {
+                        return "Hyrowah recommends continuing standard monitoring protocols and maintaining current treatment measures.";
+                    }
+                },
+                
+                // Update SHAP plot for model explainability
+                updateShapPlot() {
+                    // Simulate SHAP values
+                    const parameters = ['pH', 'DO', 'Turbidity', 'Lead', 'BOD', 'TDS', 'Temperature'];
+                    const shapValues = [0.35, 0.28, 0.15, 0.12, 0.05, 0.03, 0.02];
+                    
+                    // Create horizontal bar chart
+                    const data = [{
+                        type: 'bar',
+                        x: shapValues,
+                        y: parameters,
+                        orientation: 'h',
+                        marker: {
+                            color: shapValues.map(val => `rgba(59, 130, 246, ${val * 2})`),
+                        }
+                    }];
+                    
+                    const layout = {
+                        title: 'SHAP Values: Feature Importance for Anomaly Prediction',
+                        xaxis: {
+                            title: 'Feature Importance (SHAP Value)'
+                        },
+                        yaxis: {
+                            title: 'Parameter',
+                            automargin: true
+                        },
+                        margin: { l: 100, r: 20, t: 60, b: 60 }
+                    };
+                    
+                    Plotly.newPlot('shapPlot', data, layout, { responsive: true });
+                },
+                
+                // Thresholds and Standards
+                updateThresholds() {
+                    // Update map and visualizations with new thresholds
+                    this.updateMapVisualization();
+                    
+                    if (this.selectedPoint) {
+                        this.updatePointAnalysis();
+                    }
+                    
+                    // Recalculate health score
+                    this.calculateHealthScore();
+                },
+                
+                resetThresholds() {
+                    this.thresholds = {
+                        pH: { min: 6.5, max: 8.5 },
+                        DO: { min: 5.0 },
+                        Turbidity: { max: 5.0 },
+                        Conductivity: { max: 1500 },
+                        TDS: { max: 500 },
+                        Lead: { max: 0.015 }
+                    };
+                    
+                    this.updateThresholds();
+                }
+            }
+        }
+    </script>
+<script>document.body.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); return }, { passive: false })</script>
+	</body>
+</html>
